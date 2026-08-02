@@ -349,6 +349,7 @@ function startNextRound(game) {
     player.resigned = Boolean(player.withdrawn);
     if (!player.resigned) drawTiles(game, player, 2);
   }
+  game.lastEvent = { seq: ++game.eventSeq, type: "round-start", at: Date.now(), round: game.round };
   pushLog(game, { type: "round", text: `ROUND ${game.round} START` });
   return true;
 }
@@ -365,7 +366,7 @@ function surrenderGamePlayer(game, memberId, reason = "SURRENDERED", roundOnly =
   player.hand = [];
   pushLog(game, { type: "surrender", memberId, text: `${player.nickname} ${reason}` });
   const active = game.players.filter(item => !item.resigned);
-  game.lastEvent = { seq: ++game.eventSeq, type: "surrender", at: Date.now(), memberId, nickname: player.nickname, roundOnly, winnerMemberId: active.length === 1 ? active[0].memberId : null };
+  game.lastEvent = { seq: ++game.eventSeq, type: "surrender", at: Date.now(), round: game.round, memberId, nickname: player.nickname, roundOnly, winnerMemberId: active.length === 1 ? active[0].memberId : null };
   if (game.phase === "starting" || game.phase === "round-over") {
     if (active.length <= 1) {
       if (roundOnly) finishRound(game, `${player.nickname} ${reason}`, active[0] || null);

@@ -31,6 +31,13 @@ function webSocketUrl() {
 }
 
 function addOnlineUi() {
+  const brand = document.querySelector(".brand");
+  if (brand && !brand.querySelector(".online-link-subtitle")) {
+    const onlineLabel = document.createElement("p");
+    onlineLabel.className = "subtitle online-link-subtitle";
+    onlineLabel.textContent = "ONLINE LINK";
+    brand.appendChild(onlineLabel);
+  }
   const ruleVersion = document.querySelector(".rule-version");
   if (ruleVersion) ruleVersion.textContent = "RULE 20200629 · ONLINE PLAY";
   const status = document.createElement("div");
@@ -293,12 +300,31 @@ function handleGameResult(game) {
     shownResultId = game.result.id;
     const final = game.result.final !== false;
     const isHost = roomState?.hostId === memberId;
+    const event = game.lastEvent;
+    const surrenderResult = event?.type === "surrender"
+      && Number.isFinite(Number(event.seq))
+      && Math.abs(Number(game.result.at || 0) - Number(event.at || 0)) < 2000
+      && event.winnerMemberId === game.result.winnerMemberId;
+    if (surrenderResult) shownSurrenderSeq = Math.max(shownSurrenderSeq, Number(event.seq));
     const winnerIndex = game.players.findIndex(player => player.memberId === game.result.winnerMemberId);
     const selfWon = game.result.winnerMemberId === memberId;
     const scores = [...game.players]
       .sort((a, b) => b.totalScore - a.totalScore || b.roundScore - a.roundScore)
       .map(player => `<span${player.memberId === game.result.winnerMemberId ? ' class="winner-score"' : ""}><b>${escapeResult(player.nickname)}</b><em>${final ? player.totalScore : `${player.roundScore} / ${player.totalScore}`}</em></span>`)
       .join("");
+    if (surrenderResult && event.memberId === memberId) {
+      openResult("surrender", {
+        kicker: final ? "MATCH FORFEIT" : "ROUND FORFEIT",
+        title: final ? "DEFEAT" : "YOU FORFEIT",
+        winner: final ? `${game.result.winnerNickname} WINS` : `ROUND ${game.result.round} SURRENDERED`,
+        reason: final ? "MATCH COMPLETE" : (isHost ? "START THE NEXT ROUND" : "NEXT ROUND REMAINS AVAILABLE"),
+        color: PLAYER_COLORS[game.players.findIndex(player => player.memberId === event.memberId)] || "#c94b4b",
+        scores,
+        primaryLabel: !final && isHost ? "NEXT ROUND" : "VIEW BOARD",
+        primaryAction: !final && isHost ? "next-round" : "close"
+      });
+      return;
+    }
     openResult(final ? "victory" : "round", {
       kicker: final ? "MATCH COMPLETE" : `ROUND ${game.result.round} COMPLETE`,
       title: final ? (selfWon ? "YOU WIN" : "VICTORY") : (selfWon ? "ROUND WIN" : "ROUND OVER"),
@@ -312,13 +338,14 @@ function handleGameResult(game) {
     return;
   }
   const event = game.lastEvent;
-  if (event?.type === "surrender" && event.seq > shownSurrenderSeq) {
+  if (event?.type === "surrender" && Number(event.round) === Number(game.round) && event.seq > shownSurrenderSeq) {
     shownSurrenderSeq = event.seq;
+    if (event.memberId !== memberId) return;
     const playerIndex = game.players.findIndex(player => player.memberId === event.memberId);
     openResult("surrender", {
       kicker: event.roundOnly ? "ROUND FORFEIT" : "PLAYER EXIT",
-      title: "SURRENDER",
-      winner: `${event.nickname || "PLAYER"} ${event.roundOnly ? "FORFEITS ROUND" : "SURRENDERED"}`,
+      title: event.roundOnly ? "YOU FORFEIT" : "SURRENDER",
+      winner: event.roundOnly ? "ROUND SURRENDERED" : `${event.nickname || "PLAYER"} SURRENDERED`,
       reason: event.roundOnly ? "NEXT ROUND REMAINS AVAILABLE" : "THE MATCH CONTINUES",
       color: PLAYER_COLORS[playerIndex] || "#c94b4b",
       scores: ""
