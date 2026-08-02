@@ -414,8 +414,8 @@ function decorateReconnectState() {
     if (!card || member?.connected !== false || player.resigned) return;
     const deadline = Number(member.reconnectUntil || 0);
     const seconds = deadline ? Math.max(0, Math.ceil((deadline - now) / 1000)) : 0;
-    const meta = card.querySelector(".player-meta");
-    if (meta) meta.textContent = !deadline ? "LINK LOST · WAIT TURN" : seconds ? `LINK LOST · ${seconds}S` : "LINK LOST · FINALIZING";
+    const label = card.querySelector(".connection-label");
+    if (label) label.textContent = !deadline ? "LINK LOST · WAIT TURN" : seconds ? `LINK LOST ${seconds}S` : "LINK LOST · FINALIZING";
   });
 }
 
