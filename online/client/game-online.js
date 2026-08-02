@@ -13,6 +13,10 @@ let shownResultId = "";
 let shownSurrenderSeq = 0;
 let resultAutoClose = null;
 let linkOnline = false;
+let introTimer = null;
+let shownIntroKey = "";
+let serverClockOffset = 0;
+const GAME_INTRO_MS = 8000;
 const PLAYER_COLORS = ["#6cbebc", "#d3655d", "#c8a951", "#8c78c4"];
 
 if (!roomCode || !memberId || !saved?.token || !window.MFMBridge) location.replace("./");
@@ -35,6 +39,15 @@ function addOnlineUi() {
   status.innerHTML = `<span class="link-dot"></span><span id="onlineStatusText">LINKING</span><b id="turnTimer">--</b>`;
   document.querySelector("#arena").appendChild(status);
 
+  const nextRound = document.createElement("button");
+  nextRound.id = "onlineNextRound";
+  nextRound.className = "pix-btn primary online-next-round";
+  nextRound.type = "button";
+  nextRound.textContent = "NEXT ROUND";
+  nextRound.hidden = true;
+  nextRound.addEventListener("click", requestNextRound);
+  document.querySelector("#arena").appendChild(nextRound);
+
   const warning = document.createElement("div");
   warning.id = "turnWarning";
   warning.className = "turn-warning";
@@ -48,6 +61,20 @@ function addOnlineUi() {
     <span class="mobile-turn-copy"><small>TURN TIMER</small><strong id="mobileTurnName">WAIT</strong></span>
     <span class="turn-progress mobile-self-timer"><span class="turn-progress-track"><i></i></span><b class="turn-progress-value">--</b></span>`;
   document.body.appendChild(mobileTimer);
+
+  const intro = document.createElement("section");
+  intro.id = "onlineIntro";
+  intro.className = "online-intro";
+  intro.hidden = true;
+  intro.setAttribute("aria-live", "assertive");
+  intro.innerHTML = `
+    <div class="intro-static" aria-hidden="true"></div>
+    <article class="intro-panel pixel-box">
+      <small id="introLabel">FIRST MOVE DRAW</small>
+      <strong id="introPlayer">------</strong>
+      <b id="introCue">?</b>
+    </article>`;
+  document.body.appendChild(intro);
 
   const result = document.createElement("section");
   result.id = "onlineResult";
@@ -72,7 +99,7 @@ function addOnlineUi() {
       </div>
     </article>`;
   document.body.appendChild(result);
-  result.querySelector("#resultClose").addEventListener("click", hideResult);
+  result.querySelector("#resultClose").addEventListener("click", handleResultPrimary);
   result.querySelector("#resultLeave").addEventListener("click", leaveRoom);
   const roomTag = document.createElement("span");
   roomTag.className = "online-room-tag";
@@ -110,8 +137,11 @@ function connect() {
     if (message.type === "error") { window.MFMBridge.error(message.error); return; }
     if (message.type === "state") {
       roomState = message.room;
+      if (Number.isFinite(Number(roomState.serverTime))) serverClockOffset = Number(roomState.serverTime) - Date.now();
       if (roomState.phase === "lobby") { returnToLobby(); return; }
       window.MFMBridge.apply(roomState);
+      handleGameIntro(roomState.game);
+      updateRoundAdvance(roomState.game);
       decorateTimerBars();
       handleGameResult(roomState.game);
     }
@@ -125,11 +155,115 @@ function connect() {
   });
 }
 
+function stopIntroTimer() {
+  clearInterval(introTimer);
+  introTimer = null;
+}
+
+function hideGameIntro() {
+  stopIntroTimer();
+  const intro = document.querySelector("#onlineIntro");
+  if (!intro) return;
+  intro.hidden = true;
+  intro.dataset.stage = "";
+  intro.dataset.launching = "";
+}
+
+function handleGameIntro(game) {
+  const intro = document.querySelector("#onlineIntro");
+  if (!intro) return;
+  if (game?.phase === "starting") hideResult();
+  if (game?.phase !== "starting" || !game.startAt) {
+    if (!intro.hidden && intro.dataset.launching !== "true") {
+      stopIntroTimer();
+      intro.dataset.launching = "true";
+      intro.dataset.stage = "start";
+      document.querySelector("#introCue").textContent = "START";
+      setTimeout(hideGameIntro, 420);
+    }
+    return;
+  }
+
+  const key = `${game.round}:${game.startAt}`;
+  if (shownIntroKey !== key) {
+    shownIntroKey = key;
+    intro.hidden = false;
+    intro.dataset.launching = "";
+  }
+  stopIntroTimer();
+
+  const update = () => {
+    const players = game.players || [];
+    if (!players.length) return;
+    const remaining = game.startAt - syncedNow();
+    const elapsed = Math.max(0, GAME_INTRO_MS - remaining);
+    const actualIndex = Math.max(0, Math.min(players.length - 1, Number(game.current) || 0));
+    let playerIndex = actualIndex;
+    let stage = "draw";
+    let label = "FIRST MOVE DRAW";
+    let cue = "?";
+
+    if (remaining > 4800) {
+      playerIndex = Math.floor(elapsed / 180) % players.length;
+    } else if (remaining > 3200) {
+      stage = "first";
+      label = "FIRST PLAYER";
+      cue = "";
+    } else if (remaining > 1600) {
+      stage = "ready";
+      label = "FIRST PLAYER";
+      cue = "READY";
+    } else {
+      stage = "start";
+      label = "FIRST PLAYER";
+      cue = "START";
+    }
+
+    const player = players[playerIndex] || players[actualIndex];
+    const color = PLAYER_COLORS[playerIndex] || "#c8a951";
+    intro.dataset.stage = stage;
+    intro.style.setProperty("--intro-color", color);
+    document.querySelector("#introLabel").textContent = label;
+    document.querySelector("#introPlayer").textContent = player?.nickname || "PLAYER";
+    document.querySelector("#introCue").textContent = cue;
+    if (remaining <= 0) stopIntroTimer();
+  };
+
+  update();
+  introTimer = setInterval(update, 80);
+}
+
+function syncedNow() {
+  return Date.now() + serverClockOffset;
+}
+
 function hideResult() {
   clearTimeout(resultAutoClose);
   const result = document.querySelector("#onlineResult");
   if (result) result.hidden = true;
   document.body.classList.remove("result-impact");
+}
+
+function requestNextRound() {
+  if (roomState?.hostId !== memberId || roomState?.game?.phase !== "round-over") return;
+  send({ type: "nextRound" });
+  hideResult();
+}
+
+function handleResultPrimary() {
+  const result = document.querySelector("#onlineResult");
+  if (result?.dataset.primaryAction === "next-round") requestNextRound();
+  else hideResult();
+}
+
+function updateRoundAdvance(game) {
+  const button = document.querySelector("#onlineNextRound");
+  if (!button) return;
+  const available = game?.phase === "round-over" && game.result?.final === false;
+  const isHost = roomState?.hostId === memberId;
+  button.hidden = !available;
+  button.disabled = available && !isHost;
+  button.textContent = isHost ? "NEXT ROUND" : "WAIT HOST";
 }
 
 function openResult(mode, details) {
@@ -143,7 +277,8 @@ function openResult(mode, details) {
   document.querySelector("#onlineResultWinner").textContent = details.winner;
   document.querySelector("#onlineResultReason").textContent = details.reason || "";
   document.querySelector("#onlineResultScores").innerHTML = details.scores || "";
-  result.querySelector("#resultClose").textContent = mode === "surrender" ? "CONTINUE" : "VIEW BOARD";
+  result.dataset.primaryAction = details.primaryAction || "close";
+  result.querySelector("#resultClose").textContent = details.primaryLabel || (mode === "surrender" ? "CONTINUE" : "VIEW BOARD");
   result.querySelector("#resultLeave").hidden = mode === "surrender";
   result.hidden = false;
   document.body.classList.remove("result-impact");
@@ -156,19 +291,23 @@ function handleGameResult(game) {
   if (!game) return;
   if (game.result?.id && game.result.id !== shownResultId) {
     shownResultId = game.result.id;
+    const final = game.result.final !== false;
+    const isHost = roomState?.hostId === memberId;
     const winnerIndex = game.players.findIndex(player => player.memberId === game.result.winnerMemberId);
     const selfWon = game.result.winnerMemberId === memberId;
     const scores = [...game.players]
       .sort((a, b) => b.totalScore - a.totalScore || b.roundScore - a.roundScore)
-      .map(player => `<span${player.memberId === game.result.winnerMemberId ? ' class="winner-score"' : ""}><b>${escapeResult(player.nickname)}</b><em>${player.totalScore}</em></span>`)
+      .map(player => `<span${player.memberId === game.result.winnerMemberId ? ' class="winner-score"' : ""}><b>${escapeResult(player.nickname)}</b><em>${final ? player.totalScore : `${player.roundScore} / ${player.totalScore}`}</em></span>`)
       .join("");
-    openResult("victory", {
-      kicker: "MATCH COMPLETE",
-      title: selfWon ? "YOU WIN" : "VICTORY",
-      winner: `${game.result.winnerNickname} WINS`,
-      reason: game.result.reason,
+    openResult(final ? "victory" : "round", {
+      kicker: final ? "MATCH COMPLETE" : `ROUND ${game.result.round} COMPLETE`,
+      title: final ? (selfWon ? "YOU WIN" : "VICTORY") : (selfWon ? "ROUND WIN" : "ROUND OVER"),
+      winner: final ? `${game.result.winnerNickname} WINS` : `${game.result.winnerNickname} TAKES ROUND`,
+      reason: final ? game.result.reason : (isHost ? "START THE NEXT ROUND" : "WAITING FOR HOST"),
       color: PLAYER_COLORS[winnerIndex] || "#c8a951",
-      scores
+      scores,
+      primaryLabel: !final && isHost ? "NEXT ROUND" : "VIEW BOARD",
+      primaryAction: !final && isHost ? "next-round" : "close"
     });
     return;
   }
@@ -177,10 +316,10 @@ function handleGameResult(game) {
     shownSurrenderSeq = event.seq;
     const playerIndex = game.players.findIndex(player => player.memberId === event.memberId);
     openResult("surrender", {
-      kicker: "PLAYER EXIT",
+      kicker: event.roundOnly ? "ROUND FORFEIT" : "PLAYER EXIT",
       title: "SURRENDER",
-      winner: `${event.nickname || "PLAYER"} SURRENDERED`,
-      reason: "THE MATCH CONTINUES",
+      winner: `${event.nickname || "PLAYER"} ${event.roundOnly ? "FORFEITS ROUND" : "SURRENDERED"}`,
+      reason: event.roundOnly ? "NEXT ROUND REMAINS AVAILABLE" : "THE MATCH CONTINUES",
       color: PLAYER_COLORS[playerIndex] || "#c94b4b",
       scores: ""
     });
@@ -221,12 +360,12 @@ function updateTimer() {
     mobileName.style.color = !linkOnline ? "#c8a951" : isSelf ? (current?.color || "#f1eedc") : "#8d8a7b";
   }
   if (!linkOnline || !deadline || current?.resigned) { output.textContent = "--"; output.dataset.urgent = "false"; output.dataset.final = "false"; updateProgress(0, "--"); return; }
-  const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+  const left = Math.max(0, Math.ceil((deadline - syncedNow()) / 1000));
   output.textContent = String(left).padStart(2, "0");
   output.dataset.urgent = left <= 10 ? "true" : "false";
   output.dataset.final = left <= 3 ? "true" : "false";
   const total = roomState?.game?.turnSeconds || 0;
-  updateProgress(total ? Math.max(0, Math.min(1, (deadline - Date.now()) / (total * 1000))) : 0, `${left}S`);
+  updateProgress(total ? Math.max(0, Math.min(1, (deadline - syncedNow()) / (total * 1000))) : 0, `${left}S`);
   if (role === "player" && current?.memberId === memberId && left <= 10 && left > 0 && warnedTurn !== roomState.game.turn) {
     warnedTurn = roomState.game.turn;
     const warning = document.querySelector("#turnWarning");
@@ -239,16 +378,17 @@ function updateTimer() {
 
 function decorateReconnectState() {
   if (!roomState?.members?.length) return;
-  const now = Date.now();
+  const now = syncedNow();
   const players = roomState.game?.players || [];
   const cards = document.querySelectorAll("#players .player");
   players.forEach((player, index) => {
     const member = roomState.members.find(item => item.id === player.memberId);
     const card = cards[index];
     if (!card || member?.connected !== false || player.resigned) return;
-    const seconds = Math.max(0, Math.ceil(((member.reconnectUntil || now) - now) / 1000));
+    const deadline = Number(member.reconnectUntil || 0);
+    const seconds = deadline ? Math.max(0, Math.ceil((deadline - now) / 1000)) : 0;
     const meta = card.querySelector(".player-meta");
-    if (meta) meta.textContent = seconds ? `LINK LOST · ${seconds}S` : "LINK LOST · FINALIZING";
+    if (meta) meta.textContent = !deadline ? "LINK LOST · WAIT TURN" : seconds ? `LINK LOST · ${seconds}S` : "LINK LOST · FINALIZING";
   });
 }
 

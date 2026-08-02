@@ -2,6 +2,8 @@ const ROOM_CODE = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const DIRS = [[1, 0], [0, 1], [-1, 1], [-1, 0], [0, -1], [1, -1]];
 const RADIUS = 4;
 const MAX_HAND = 5;
+const RECONNECT_GRACE_MS = 120_000;
+const GAME_INTRO_MS = 8_000;
 
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), {
   status,
@@ -239,7 +241,7 @@ function drawTiles(game, player, amount = 2) {
 }
 
 function pushLog(game, entry) {
-  game.logs.unshift({ id: ++game.logSeq, at: Date.now(), turn: game.turn, ...entry });
+  game.logs.unshift({ id: ++game.logSeq, at: Date.now(), round: game.round, turn: game.turn, ...entry });
   game.logs = game.logs.slice(0, 120);
 }
 
@@ -266,14 +268,28 @@ function nextTurn(game) {
   beginTurn(game);
 }
 
-function finishGame(game, reason, winner = null) {
+function awardRoundWin(game, winner = null) {
+  if (game.roundWinnerAwarded) return game.players.find(player => player.memberId === game.roundWinnerMemberId) || winner;
+  const ranked = [...game.players].filter(player => !player.resigned).sort((a, b) => b.roundScore - a.roundScore || b.totalScore - a.totalScore);
+  const roundWinner = winner || ranked[0] || null;
+  if (roundWinner) roundWinner.roundWins = (roundWinner.roundWins || 0) + 1;
+  game.roundWinnerAwarded = true;
+  game.roundWinnerMemberId = roundWinner?.memberId || null;
+  return roundWinner;
+}
+
+function finishGame(game, reason, winner = null, awardCurrentRound = true) {
   const ranked = [...game.players].sort((a, b) => b.totalScore - a.totalScore || b.roundScore - a.roundScore);
   const champion = winner || ranked[0] || null;
+  if (awardCurrentRound) awardRoundWin(game, winner);
   game.locked = true;
   game.phase = "game-over";
   game.turnDeadline = null;
+  game.startAt = null;
   game.result = {
     id: `${game.round}:${game.turn}:${Date.now()}`,
+    final: true,
+    round: game.round,
     reason,
     winnerMemberId: champion?.memberId || null,
     winnerNickname: champion?.nickname || "NO WINNER",
@@ -283,19 +299,90 @@ function finishGame(game, reason, winner = null) {
   pushLog(game, { type: "result", memberId: champion?.memberId, text: `${champion?.nickname || "NO WINNER"} WINS · ${reason}` });
 }
 
-function surrenderGamePlayer(game, memberId, reason = "SURRENDERED") {
-  if (!game || game.locked) return { ok: false };
+function finishRound(game, reason, winner = null) {
+  const roundWinner = awardRoundWin(game, winner);
+  if (game.round >= 3) {
+    finishGame(game, reason, null, false);
+    return;
+  }
+  game.locked = true;
+  game.phase = "round-over";
+  game.turnDeadline = null;
+  game.startAt = null;
+  game.result = {
+    id: `${game.round}:${game.turn}:${Date.now()}`,
+    final: false,
+    round: game.round,
+    reason,
+    winnerMemberId: roundWinner?.memberId || null,
+    winnerNickname: roundWinner?.nickname || "NO WINNER",
+    winnerScore: roundWinner?.roundScore || 0,
+    at: Date.now()
+  };
+  pushLog(game, { type: "result", memberId: roundWinner?.memberId, text: `ROUND ${game.round} · ${roundWinner?.nickname || "NO WINNER"} LEADS` });
+}
+
+function startNextRound(game) {
+  if (!game || game.phase !== "round-over" || game.round >= 3) return false;
+  const activeIndices = game.players.map((player, index) => player.withdrawn ? -1 : index).filter(index => index >= 0);
+  if (activeIndices.length < 2) return false;
+  const random = new Uint32Array(1);
+  crypto.getRandomValues(random);
+  game.round++;
+  game.turn = 0;
+  game.current = activeIndices[random[0] % activeIndices.length];
+  game.deck = makeDeck(game.twoCount);
+  game.deckTotal = game.deck.length;
+  game.board = {};
+  game.scoreMarks = [];
+  game.scored = [];
+  game.locked = true;
+  game.phase = "starting";
+  game.turnDeadline = null;
+  game.startAt = Date.now() + GAME_INTRO_MS;
+  game.result = null;
+  game.roundWinnerAwarded = false;
+  game.roundWinnerMemberId = null;
+  for (const player of game.players) {
+    player.hand = [];
+    player.roundScore = 0;
+    player.resigned = Boolean(player.withdrawn);
+    if (!player.resigned) drawTiles(game, player, 2);
+  }
+  pushLog(game, { type: "round", text: `ROUND ${game.round} START` });
+  return true;
+}
+
+function surrenderGamePlayer(game, memberId, reason = "SURRENDERED", roundOnly = false) {
+  if (!game || game.locked && game.phase !== "starting" && game.phase !== "round-over") return { ok: false };
   const playerIndex = game.players.findIndex(player => player.memberId === memberId);
   if (playerIndex < 0) return { ok: false };
   const player = game.players[playerIndex];
   if (player.resigned) return { ok: true };
   const wasCurrent = playerIndex === game.current;
   player.resigned = true;
+  if (!roundOnly) player.withdrawn = true;
   player.hand = [];
   pushLog(game, { type: "surrender", memberId, text: `${player.nickname} ${reason}` });
   const active = game.players.filter(item => !item.resigned);
-  game.lastEvent = { seq: ++game.eventSeq, type: "surrender", at: Date.now(), memberId, nickname: player.nickname, winnerMemberId: active.length === 1 ? active[0].memberId : null };
-  if (active.length <= 1) finishGame(game, `${player.nickname} ${reason}`, active[0] || null);
+  game.lastEvent = { seq: ++game.eventSeq, type: "surrender", at: Date.now(), memberId, nickname: player.nickname, roundOnly, winnerMemberId: active.length === 1 ? active[0].memberId : null };
+  if (game.phase === "starting" || game.phase === "round-over") {
+    if (active.length <= 1) {
+      if (roundOnly) finishRound(game, `${player.nickname} ${reason}`, active[0] || null);
+      else finishGame(game, `${player.nickname} ${reason}`, active[0] || null);
+    }
+    else if (game.phase === "starting" && wasCurrent) {
+      for (let step = 1; step <= game.players.length; step++) {
+        const candidate = (playerIndex + step) % game.players.length;
+        if (!game.players[candidate].resigned) { game.current = candidate; break; }
+      }
+    }
+    return { ok: true };
+  }
+  if (active.length <= 1) {
+    if (roundOnly) finishRound(game, `${player.nickname} ${reason}`, active[0] || null);
+    else finishGame(game, `${player.nickname} ${reason}`, active[0] || null);
+  }
   else if (wasCurrent) {
     nextTurn(game);
     checkRoundEnd(game);
@@ -307,7 +394,7 @@ function checkRoundEnd(game) {
   const active = game.players.filter(player => !player.resigned);
   const noMoves = active.every(player => !player.hand.length || !legalMoves(game, player));
   if (!game.deck.length && noMoves) {
-    finishGame(game, `ROUND ${game.round} COMPLETE`);
+    finishRound(game, `ROUND ${game.round} COMPLETE`);
     return true;
   }
   return false;
@@ -318,16 +405,17 @@ function createGame(members, twoCount = 8, turnSeconds = 0) {
   const players = members
     .filter(member => member.role === "player")
     .sort((a, b) => a.joinedAt - b.joinedAt)
-    .map(member => ({ memberId: member.id, nickname: member.nickname, hand: [], roundScore: 0, totalScore: 0, resigned: false }));
+    .map(member => ({ memberId: member.id, nickname: member.nickname, hand: [], roundScore: 0, totalScore: 0, roundWins: 0, resigned: false, withdrawn: false }));
+  const random = new Uint32Array(1);
+  crypto.getRandomValues(random);
   const game = {
-    round: 1, turn: 0, current: 0, deck, deckTotal: deck.length, players,
+    round: 1, turn: 0, current: players.length ? random[0] % players.length : 0, deck, deckTotal: deck.length, players,
     board: {}, scoreMarks: [], scored: [], logs: [], logSeq: 0,
-    locked: false, phase: "playing", eventSeq: 0, lastEvent: null, twoCount,
-    turnSeconds, turnDeadline: null, result: null
+    locked: true, phase: "starting", eventSeq: 0, lastEvent: null, twoCount,
+    turnSeconds, turnDeadline: null, startAt: Date.now() + GAME_INTRO_MS, result: null, roundWinnerAwarded: false, roundWinnerMemberId: null
   };
   for (const player of players) drawTiles(game, player, 2);
   pushLog(game, { type: "round", text: "ROUND 1 START" });
-  beginTurn(game);
   return game;
 }
 
@@ -386,7 +474,7 @@ function gameAction(game, memberId, message) {
   }
 
   if (action === "surrender") {
-    return surrenderGamePlayer(game, memberId);
+    return surrenderGamePlayer(game, memberId, "SURRENDERED ROUND", true);
   }
 
   return { error: "UNKNOWN ACTION" };
@@ -409,6 +497,7 @@ function publicGame(game, viewerId, role) {
     lastEvent: game.lastEvent,
     turnSeconds: game.turnSeconds,
     turnDeadline: game.turnDeadline,
+    startAt: game.startAt || null,
     players: game.players.map(player => ({
       memberId: player.memberId,
       nickname: player.nickname,
@@ -416,6 +505,7 @@ function publicGame(game, viewerId, role) {
       hand: role === "player" && player.memberId === viewerId ? player.hand : undefined,
       roundScore: player.roundScore,
       totalScore: player.totalScore,
+      roundWins: player.roundWins || 0,
       resigned: player.resigned
     }))
   };
@@ -539,7 +629,7 @@ export class GameRoom {
       role: member.role,
       ready: member.ready,
       connected: member.connected,
-      reconnectUntil: !member.connected && member.disconnectedAt ? member.disconnectedAt + 60_000 : null,
+      reconnectUntil: !member.connected ? member.reconnectDeadline || null : null,
       isHost: member.id === this.room.hostId,
       joinedAt: member.joinedAt
     };
@@ -552,6 +642,7 @@ export class GameRoom {
       phase: this.room.phase,
       hasPassword: Boolean(this.room.passwordHash),
       turnSeconds: this.room.turnSeconds || 0,
+      serverTime: Date.now(),
       hostId: this.room.hostId,
       selfId: memberId,
       members: this.room.members.map(member => this.memberView(member)),
@@ -573,17 +664,20 @@ export class GameRoom {
     if (this.room) return errorJson("ROOM CODE COLLISION", 409);
     const body = await bodyJson(request);
     if (!nicknameOk(body.nickname) || !roomCodeOk(body.code)) return errorJson("BAD ROOM DATA");
+    const turnSeconds = Number(body.turnSeconds);
+    if (!Number.isInteger(turnSeconds) || turnSeconds !== 0 && (turnSeconds < 10 || turnSeconds > 600)) return errorJson("TURN TIMER MUST BE 10-600 SEC");
     const token = randomToken();
     const member = {
       id: crypto.randomUUID(), nickname: body.nickname.toUpperCase(), role: "player", ready: false,
-      connected: false, joinedAt: Date.now(), disconnectedAt: Date.now(), tokenHash: await digest(token)
+      connected: false, joinedAt: Date.now(), disconnectedAt: Date.now(), reconnectDeadline: null, tokenHash: await digest(token)
     };
     this.room = {
       code: body.code, phase: "lobby", hostId: member.id,
       passwordHash: body.password ? await digest(body.password) : "",
-      turnSeconds: [30, 45, 60, 90].includes(Number(body.turnSeconds)) ? Number(body.turnSeconds) : 0,
+      turnSeconds,
       members: [member], game: null, createdAt: Date.now()
     };
+    this.syncReconnectDeadlines();
     await this.save();
     await this.scheduleAlarm();
     return json({ ok: true, code: this.room.code, token, memberId: member.id, role: member.role }, 201);
@@ -603,9 +697,10 @@ export class GameRoom {
     const token = randomToken();
     const member = {
       id: crypto.randomUUID(), nickname, role, ready: false,
-      connected: false, joinedAt: Date.now(), disconnectedAt: Date.now(), tokenHash: await digest(token)
+      connected: false, joinedAt: Date.now(), disconnectedAt: Date.now(), reconnectDeadline: null, tokenHash: await digest(token)
     };
     this.room.members.push(member);
+    this.syncReconnectDeadlines();
     await this.save();
     await this.scheduleAlarm();
     await this.broadcast();
@@ -619,6 +714,7 @@ export class GameRoom {
       member.disconnectedAt = Date.now();
       touched = true;
     }
+    if (this.syncReconnectDeadlines()) touched = true;
     if (touched) {
       await this.save();
       await this.scheduleAlarm();
@@ -639,6 +735,7 @@ export class GameRoom {
     server.serializeAttachment({ memberId: member.id });
     member.connected = true;
     member.disconnectedAt = null;
+    member.reconnectDeadline = null;
     await this.save();
     queueMicrotask(() => this.broadcast());
     return new Response(null, { status: 101, webSocket: client });
@@ -666,6 +763,31 @@ export class GameRoom {
     if (this.room.members.some(member => member.id === this.room.hostId)) return;
     const candidate = [...this.room.members].sort((a, b) => a.joinedAt - b.joinedAt)[0];
     this.room.hostId = candidate?.id || null;
+  }
+
+  reconnectTimerShouldRun(member) {
+    if (member.connected || !member.disconnectedAt) return false;
+    const game = this.room.game;
+    if (this.room.phase !== "game" || member.role !== "player" || !game) return true;
+    if (game.phase === "starting") return false;
+    if (game.locked) return true;
+    const current = game.players[game.current];
+    return current?.memberId === member.id && !current.resigned;
+  }
+
+  syncReconnectDeadlines(now = Date.now()) {
+    let changed = false;
+    for (const member of this.room.members) {
+      const shouldRun = this.reconnectTimerShouldRun(member);
+      if (shouldRun && !member.reconnectDeadline) {
+        member.reconnectDeadline = now + RECONNECT_GRACE_MS;
+        changed = true;
+      } else if (!shouldRun && member.reconnectDeadline) {
+        member.reconnectDeadline = null;
+        changed = true;
+      }
+    }
+    return changed;
   }
 
   removeMember(memberId) {
@@ -718,6 +840,10 @@ export class GameRoom {
       if (this.room.phase === "game" && member.role === "player") surrenderGamePlayer(this.room.game, member.id, "LEFT · SURRENDERED");
       this.removeMember(member.id);
       this.closeMemberSockets(member.id, 1000, "LEFT ROOM");
+    } else if (message.type === "nextRound") {
+      if (!host) error = "HOST ONLY";
+      else if (this.room.phase !== "game" || this.room.game?.phase !== "round-over") error = "NEXT ROUND NOT AVAILABLE";
+      else if (!startNextRound(this.room.game)) error = "CANNOT START NEXT ROUND";
     } else if (message.type === "game") {
       if (this.room.phase !== "game") error = "GAME NOT STARTED";
       else {
@@ -727,6 +853,7 @@ export class GameRoom {
     } else if (message.type !== "ping") error = "UNKNOWN MESSAGE";
 
     if (error) this.send(ws, { type: "error", error });
+    this.syncReconnectDeadlines();
     await this.save();
     await this.scheduleAlarm();
     if (!this.room.members.length) {
@@ -744,6 +871,8 @@ export class GameRoom {
     if (member) {
       member.connected = false;
       member.disconnectedAt = Date.now();
+      member.reconnectDeadline = null;
+      this.syncReconnectDeadlines();
       await this.save();
       await this.scheduleAlarm();
       await this.broadcast();
@@ -757,8 +886,9 @@ export class GameRoom {
   async scheduleAlarm() {
     if (!this.room) return;
     const deadlines = [];
+    if (this.room.phase === "game" && this.room.game?.phase === "starting" && this.room.game.startAt) deadlines.push(this.room.game.startAt);
     if (this.room.phase === "game" && this.room.game?.turnDeadline) deadlines.push(this.room.game.turnDeadline);
-    for (const member of this.room.members) if (!member.connected && member.disconnectedAt) deadlines.push(member.disconnectedAt + 60_000);
+    for (const member of this.room.members) if (!member.connected && member.reconnectDeadline) deadlines.push(member.reconnectDeadline);
     if (deadlines.length) await this.ctx.storage.setAlarm(Math.max(Date.now() + 250, Math.min(...deadlines)));
   }
 
@@ -767,6 +897,18 @@ export class GameRoom {
     if (!this.room) return;
     const now = Date.now();
     const game = this.room.game;
+    if (this.room.phase === "game" && game?.phase === "starting" && game.startAt && game.startAt <= now) {
+      game.startAt = null;
+      game.phase = "playing";
+      game.locked = false;
+      game.lastEvent = {
+        seq: ++game.eventSeq,
+        type: "start",
+        at: now,
+        memberId: game.players[game.current]?.memberId || null
+      };
+      beginTurn(game);
+    }
     if (this.room.phase === "game" && game?.turnDeadline && game.turnDeadline <= now && !game.locked) {
       const player = game.players[game.current];
       pushLog(game, { type: "pass", memberId: player.memberId, text: `${player.nickname} TIME OUT · AUTO PASS` });
@@ -774,11 +916,13 @@ export class GameRoom {
       nextTurn(game);
       checkRoundEnd(game);
     }
-    const cutoff = Date.now() - 60_000;
-    const expired = this.room.members.filter(member => !member.connected && member.disconnectedAt && member.disconnectedAt <= cutoff);
+    this.syncReconnectDeadlines(now);
+    const expired = this.room.members.filter(member => !member.connected && member.reconnectDeadline && member.reconnectDeadline <= now);
     if (this.room.phase === "game") for (const member of expired) if (member.role === "player") surrenderGamePlayer(this.room.game, member.id, "LINK LOST · SURRENDERED");
-    this.room.members = this.room.members.filter(member => member.connected || !member.disconnectedAt || member.disconnectedAt > cutoff);
+    const expiredIds = new Set(expired.map(member => member.id));
+    this.room.members = this.room.members.filter(member => !expiredIds.has(member.id));
     this.transferHost();
+    this.syncReconnectDeadlines(now);
     if (!this.room.members.length) {
       await this.ctx.storage.deleteAll();
       this.room = null;

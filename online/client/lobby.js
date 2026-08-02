@@ -249,8 +249,10 @@ function memberItem(member, self, host) {
   const tags = main.querySelector(".member-tags");
   if (member.isHost) tags.insertAdjacentHTML("beforeend", "<span>HOST</span>");
   if (!member.connected) {
-    const seconds = Math.max(0, Math.ceil(((member.reconnectUntil || Date.now()) - Date.now()) / 1000));
-    tags.insertAdjacentHTML("beforeend", `<span class="link-lost-tag" data-reconnect-until="${member.reconnectUntil || 0}">LINK LOST · ${seconds}S</span>`);
+    const deadline = Number(member.reconnectUntil || 0);
+    const seconds = deadline ? Math.max(0, Math.ceil((deadline - Date.now()) / 1000)) : 0;
+    const label = !deadline ? "LINK LOST · WAIT TURN" : seconds ? `LINK LOST · ${seconds}S` : "LINK LOST · FINALIZING";
+    tags.insertAdjacentHTML("beforeend", `<span class="link-lost-tag" data-reconnect-until="${deadline}">${label}</span>`);
   }
   if (member.role === "player") tags.insertAdjacentHTML("beforeend", `<span>${member.ready ? "READY" : "WAIT"}</span>`);
   li.appendChild(main);
@@ -303,8 +305,9 @@ function renderRoom() {
 function updateReconnectLabels() {
   const now = Date.now();
   document.querySelectorAll(".link-lost-tag").forEach(tag => {
-    const seconds = Math.max(0, Math.ceil((Number(tag.dataset.reconnectUntil || now) - now) / 1000));
-    tag.textContent = seconds ? `LINK LOST · ${seconds}S` : "LINK LOST · FINALIZING";
+    const deadline = Number(tag.dataset.reconnectUntil || 0);
+    const seconds = deadline ? Math.max(0, Math.ceil((deadline - now) / 1000)) : 0;
+    tag.textContent = !deadline ? "LINK LOST · WAIT TURN" : seconds ? `LINK LOST · ${seconds}S` : "LINK LOST · FINALIZING";
   });
 }
 
@@ -355,11 +358,31 @@ $("#changeNickname").addEventListener("click", () => {
   setScreen("identity");
 });
 
+function syncCustomTimer() {
+  const custom = $("#turnSeconds").value === "custom";
+  const input = $("#customTurnSeconds");
+  input.hidden = !custom;
+  input.required = custom;
+  $("#customTimerHint").hidden = !custom;
+}
+
+$("#turnSeconds").addEventListener("change", () => {
+  syncCustomTimer();
+  if (!$("#customTurnSeconds").hidden) $("#customTurnSeconds").focus();
+});
+syncCustomTimer();
+
 $("#createForm").addEventListener("submit", async event => {
   event.preventDefault();
   $("#lobbyError").textContent = "";
+  const customTimer = $("#turnSeconds").value === "custom";
+  const turnSeconds = customTimer ? Math.trunc(Number($("#customTurnSeconds").value)) : Number($("#turnSeconds").value);
+  if (customTimer && (!Number.isInteger(turnSeconds) || turnSeconds < 10 || turnSeconds > 600)) {
+    $("#lobbyError").textContent = "TURN TIMER MUST BE 10–600 SEC";
+    return;
+  }
   try {
-    const data = await request("/api/rooms", { method: "POST", body: JSON.stringify({ nickname: state.nickname, password: $("#createPassword").value, turnSeconds: Number($("#turnSeconds").value) }) });
+    const data = await request("/api/rooms", { method: "POST", body: JSON.stringify({ nickname: state.nickname, password: $("#createPassword").value, turnSeconds }) });
     saveSession(data);
     history.replaceState(null, "", `?room=${data.code}`);
     connectRoom();
