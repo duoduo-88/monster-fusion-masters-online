@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="description" content="Monster Fusion Masters online room lobby">
+  <title>Monster Fusion Masters · Online</title>
+  <link rel="stylesheet" href="./lobby.css">
+</head>
+<body>
+  <canvas id="noise" aria-hidden="true"></canvas>
+  <main class="shell">
+    <header class="topbar pixel-box">
+      <div class="lobby-brand">
+        <h1 class="sr-only">MONSTER FUSION MASTERS ONLINE LINK</h1>
+        <div class="hex-logo" id="lobbyLogo" role="img" aria-label="Monster Fusion Masters"></div>
+        <div class="brand-meta">
+          <span class="online-link-label">ONLINE LINK</span>
+          <div class="link-state" id="linkState"><i></i><span>LOCAL</span></div>
+        </div>
+      </div>
+    </header>
+
+    <section class="screen pixel-box" id="identityScreen">
+      <div class="screen-copy">
+        <span class="step">01 / ID</span>
+        <h2>CREATE CALLSIGN</h2>
+        <p>Use 1–6 English letters or numbers. Your callsign disappears when this tab closes.</p>
+      </div>
+      <form id="identityForm" class="terminal-form">
+        <label for="nickname">CALLSIGN</label>
+        <div class="input-row">
+          <span>&gt;</span><input id="nickname" name="nickname" maxlength="6" pattern="[A-Za-z0-9]{1,6}" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="CYAN01" required>
+        </div>
+        <output class="form-error" id="identityError"></output>
+        <button class="pix-btn primary" type="submit">ENTER LOBBY</button>
+      </form>
+    </section>
+
+    <section class="screen lobby-screen" id="lobbyScreen" hidden>
+      <aside class="identity-card pixel-box">
+        <span class="step">PLAYER ID</span>
+        <strong id="nicknameView">------</strong>
+        <button class="text-btn" id="changeNickname" type="button">CHANGE</button>
+      </aside>
+      <div class="room-actions">
+        <form id="createForm" class="room-card pixel-box">
+          <span class="step">02 / HOST</span>
+          <h2>CREATE ROOM</h2>
+          <label>ROOM PASSWORD <small>OPTIONAL</small><input id="createPassword" maxlength="16" type="password" autocomplete="new-password" placeholder="NONE"></label>
+          <label>TURN TIMER<select id="turnSeconds"><option value="0">OFF</option><option value="30">30 SEC</option><option value="45">45 SEC</option><option value="60" selected>60 SEC</option><option value="90">90 SEC</option></select></label>
+          <button class="pix-btn primary" type="submit">CREATE</button>
+        </form>
+        <form id="joinForm" class="room-card pixel-box">
+          <span class="step">02 / LINK</span>
+          <h2>JOIN ROOM</h2>
+          <label>ROOM CODE<input id="joinCode" maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="A7K2Q9" required></label>
+          <label>ROOM PASSWORD <small>IF REQUIRED</small><input id="joinPassword" maxlength="16" type="password" autocomplete="current-password" placeholder="NONE"></label>
+          <fieldset class="role-switch"><legend>JOIN AS</legend><label><input type="radio" name="joinRole" value="player" checked><span>PLAYER</span></label><label><input type="radio" name="joinRole" value="spectator"><span>WATCH</span></label></fieldset>
+          <button class="pix-btn" type="submit">CONNECT</button>
+        </form>
+      </div>
+      <section class="room-browser pixel-box">
+        <header class="room-browser-head">
+          <div><span class="step">03 / ROOMS</span><h2>ROOM LIST</h2></div>
+          <button class="pix-btn refresh-rooms" id="refreshRooms" type="button">REFRESH</button>
+        </header>
+        <div class="room-list" id="roomList" aria-live="polite"></div>
+        <p class="room-list-empty" id="roomListEmpty">SCANNING ROOMS...</p>
+      </section>
+      <output class="form-error lobby-error" id="lobbyError"></output>
+    </section>
+
+    <section class="screen room-screen" id="roomScreen" hidden>
+      <header class="room-head pixel-box">
+        <div><span class="step">ROOM</span><h2 id="roomCode">------</h2></div>
+        <div class="room-badges"><span id="roomTimer">60 SEC</span><span id="roomLock">OPEN</span><span id="roomPhase">LOBBY</span></div>
+      </header>
+      <section class="members-panel pixel-box">
+        <div class="section-head"><h3>PLAYERS</h3><span id="playerCount">0 / 4</span></div>
+        <ol class="member-list" id="playerList"></ol>
+        <div class="section-head watch-head"><h3>WATCH</h3><span id="watchCount">0</span></div>
+        <ol class="member-list compact" id="watchList"></ol>
+      </section>
+      <aside class="invite-panel pixel-box">
+        <span class="step">INVITE LINK</span>
+        <div class="qr-shell"><canvas id="qrCanvas" width="224" height="224" aria-label="Room invitation QR code"></canvas></div>
+        <p id="inviteUrl"></p>
+        <button class="pix-btn" id="copyInvite" type="button">COPY LINK</button>
+      </aside>
+      <footer class="room-controls pixel-box">
+        <div class="self-status"><span id="selfRole">PLAYER</span><strong id="selfState">NOT READY</strong></div>
+        <button class="pix-btn" id="moveSelf" type="button">MOVE TO WATCH</button>
+        <button class="pix-btn primary" id="readyBtn" type="button">READY</button>
+        <button class="pix-btn primary" id="startBtn" type="button" hidden>START</button>
+        <button class="pix-btn danger" id="leaveBtn" type="button">LEAVE</button>
+      </footer>
+      <output class="form-error room-error" id="roomError"></output>
+    </section>
+  </main>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="./config.js"></script>
+  <script type="module" src="./lobby.js"></script>
+</body>
+</html>

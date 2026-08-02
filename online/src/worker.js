@@ -1,0 +1,791 @@
+const ROOM_CODE = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const DIRS = [[1, 0], [0, 1], [-1, 1], [-1, 0], [0, -1], [1, -1]];
+const RADIUS = 4;
+const MAX_HAND = 5;
+
+const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), {
+  status,
+  headers: { "content-type": "application/json; charset=utf-8", ...extra }
+});
+
+const errorJson = (message, status = 400) => json({ ok: false, error: message }, status);
+const nicknameOk = value => /^[A-Za-z0-9]{1,6}$/.test(String(value || ""));
+const roomCodeOk = value => /^[A-Z2-9]{6}$/.test(String(value || "").toUpperCase());
+const K = (q, r) => `${q},${r}`;
+const inside = (q, r) => Math.max(Math.abs(q), Math.abs(r), Math.abs(-q - r)) <= RADIUS;
+const scoreFor = n => n === 2 ? 1 : n === 3 ? 2 : n === 4 ? 4 : n === 5 ? 7 : n === 6 ? 10 : n >= 7 ? n * 2 : 0;
+
+function randomCode(length = 6) {
+  const bytes = crypto.getRandomValues(new Uint8Array(length));
+  return Array.from(bytes, byte => ROOM_CODE[byte % ROOM_CODE.length]).join("");
+}
+
+function randomToken() {
+  const bytes = crypto.getRandomValues(new Uint8Array(24));
+  return Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function digest(value) {
+  const bytes = new TextEncoder().encode(String(value));
+  const hash = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function bodyJson(request) {
+  try { return await request.json(); } catch { return {}; }
+}
+
+function withCors(response, request) {
+  const headers = new Headers(response.headers);
+  const origin = request.headers.get("origin") || "*";
+  headers.set("access-control-allow-origin", origin);
+  headers.set("access-control-allow-methods", "GET,POST,OPTIONS");
+  headers.set("access-control-allow-headers", "content-type");
+  headers.set("vary", "Origin");
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+function rotate(edges, amount) {
+  const n = ((amount % 6) + 6) % 6;
+  return edges.map((_, index) => edges[(index - n + 6) % 6]);
+}
+
+function combinations(n, k) {
+  const out = [];
+  for (let mask = 0; mask < (1 << n); mask++) {
+    const edges = Array.from({ length: n }, (_, index) => (mask >> index) & 1);
+    if (edges.reduce((sum, bit) => sum + bit, 0) === k) out.push(edges);
+  }
+  return out;
+}
+
+function canonical(edges) {
+  let best = "";
+  for (let turn = 0; turn < 6; turn++) {
+    const value = rotate(edges, turn).join("");
+    if (!best || value < best) best = value;
+  }
+  return best;
+}
+
+function variants(count) {
+  const seen = new Set();
+  const out = [];
+  for (const edges of combinations(6, count)) {
+    const value = canonical(edges);
+    if (!seen.has(value)) { seen.add(value); out.push(edges); }
+  }
+  return out;
+}
+
+function templatesFor(sides) {
+  const base = variants(sides);
+  if (sides >= 3 && sides <= 5) return base.flatMap(edges => [
+    { edges: [...edges], center: false },
+    { edges: [...edges], center: true }
+  ]);
+  return base.map(edges => ({ edges: [...edges], center: sides === 6 }));
+}
+
+const TEMPLATES = Array.from({ length: 7 }, (_, sides) => templatesFor(sides));
+
+function shuffle(items) {
+  for (let index = items.length - 1; index > 0; index--) {
+    const random = crypto.getRandomValues(new Uint32Array(1))[0] % (index + 1);
+    [items[index], items[random]] = [items[random], items[index]];
+  }
+  return items;
+}
+
+function makeDeck(twoCount = 8) {
+  const counts = [2, twoCount * 2, twoCount, twoCount, 4, 2, 2];
+  let tileId = 1;
+  const deck = [];
+  counts.forEach((count, sides) => {
+    for (let index = 0; index < count; index++) {
+      const template = TEMPLATES[sides][index % TEMPLATES[sides].length];
+      deck.push({ id: tileId++, sides, edges: [...template.edges], center: template.center, handRotation: 0 });
+    }
+  });
+  return shuffle(deck);
+}
+
+function coordRows(q) {
+  const rows = [];
+  for (let r = -RADIUS; r <= RADIUS; r++) if (inside(q, r)) rows.push(r);
+  return rows;
+}
+
+function coordCell(value) {
+  const match = String(value || "").trim().toUpperCase().match(/^([A-I])([1-9])$/);
+  if (!match) return null;
+  const q = match[1].charCodeAt(0) - 65 - RADIUS;
+  const r = coordRows(q)[Number(match[2]) - 1];
+  return r === undefined ? null : { q, r };
+}
+
+function edgeNeighbor(q, r, edge) {
+  return [q + DIRS[edge][0], r + DIRS[edge][1]];
+}
+
+function canPlace(game, q, r, edges) {
+  if (!inside(q, r) || game.board[K(q, r)]) return false;
+  for (let edge = 0; edge < 6; edge++) {
+    const [nq, nr] = edgeNeighbor(q, r, edge);
+    const neighbor = game.board[K(nq, nr)];
+    if (neighbor && edges[edge] !== neighbor.edges[(edge + 3) % 6]) return false;
+  }
+  return true;
+}
+
+function tileGroups(tile) {
+  const active = tile.edges.map((on, index) => on ? index : -1).filter(index => index >= 0);
+  if (tile.center && active.length) return [{ edges: active, center: true }];
+  const on = new Set(active);
+  const seen = new Set();
+  const groups = [];
+  for (const edge of active) {
+    if (seen.has(edge)) continue;
+    const group = [];
+    const queue = [edge];
+    seen.add(edge);
+    while (queue.length) {
+      const current = queue.shift();
+      group.push(current);
+      for (const next of [(current + 5) % 6, (current + 1) % 6]) {
+        if (on.has(next) && !seen.has(next)) { seen.add(next); queue.push(next); }
+      }
+    }
+    groups.push({ edges: group, center: false });
+  }
+  return groups;
+}
+
+const nodeId = (key, group) => `${key}#${group}`;
+function readNode(id) {
+  const cut = id.lastIndexOf("#");
+  return { key: id.slice(0, cut), group: Number(id.slice(cut + 1)) };
+}
+
+function groupForEdge(tile, edge) {
+  return tileGroups(tile).findIndex(group => group.edges.includes(edge));
+}
+
+function pathComponent(game, startKey, startGroup) {
+  const first = game.board[startKey];
+  const groups = first && tileGroups(first);
+  if (!first || !groups[startGroup]) return null;
+  const firstId = nodeId(startKey, startGroup);
+  const seen = new Set([firstId]);
+  const queue = [firstId];
+  let open = false;
+  while (queue.length) {
+    const id = queue.shift();
+    const ref = readNode(id);
+    const tile = game.board[ref.key];
+    const group = tileGroups(tile)[ref.group];
+    for (const edge of group.edges) {
+      const [nq, nr] = edgeNeighbor(tile.q, tile.r, edge);
+      if (!inside(nq, nr)) { open = true; continue; }
+      const key = K(nq, nr);
+      const neighbor = game.board[key];
+      if (!neighbor || !neighbor.edges[(edge + 3) % 6]) { open = true; continue; }
+      const nextId = nodeId(key, groupForEdge(neighbor, (edge + 3) % 6));
+      if (!seen.has(nextId)) { seen.add(nextId); queue.push(nextId); }
+    }
+  }
+  return { nodes: [...seen], keys: [...new Set([...seen].map(id => readNode(id).key))], closed: !open };
+}
+
+function scorePlacement(game, key) {
+  const tile = game.board[key];
+  const results = [];
+  const checked = new Set();
+  if (!tile) return results;
+  tileGroups(tile).forEach((_, group) => {
+    const component = pathComponent(game, key, group);
+    if (!component) return;
+    const signature = component.nodes.slice().sort().join("|");
+    if (checked.has(signature)) return;
+    checked.add(signature);
+    if (!component.closed || game.scored.includes(signature)) return;
+    const points = scoreFor(component.keys.length);
+    if (!points) return;
+    game.scored.push(signature);
+    results.push({ ...component, points });
+  });
+  return results;
+}
+
+function legalMoves(game, player) {
+  for (const tile of player.hand) {
+    for (let turn = 0; turn < 6; turn++) {
+      const edges = rotate(tile.edges, turn);
+      for (let q = -RADIUS; q <= RADIUS; q++) {
+        for (let r = -RADIUS; r <= RADIUS; r++) if (inside(q, r) && canPlace(game, q, r, edges)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function drawTiles(game, player, amount = 2) {
+  let drawn = 0;
+  while (drawn < amount && player.hand.length < MAX_HAND && game.deck.length) {
+    player.hand.push(game.deck.shift());
+    drawn++;
+  }
+  return drawn;
+}
+
+function pushLog(game, entry) {
+  game.logs.unshift({ id: ++game.logSeq, at: Date.now(), turn: game.turn, ...entry });
+  game.logs = game.logs.slice(0, 120);
+}
+
+function beginTurn(game) {
+  const active = game.players.filter(player => !player.resigned);
+  if (!active.length) { game.locked = true; return; }
+  let guard = 0;
+  while (game.players[game.current]?.resigned && guard++ < game.players.length) game.current = (game.current + 1) % game.players.length;
+  game.turn++;
+  const player = game.players[game.current];
+  const drawn = drawTiles(game, player, 2);
+  game.turnDeadline = game.turnSeconds ? Date.now() + game.turnSeconds * 1000 : null;
+  pushLog(game, { type: "turn", memberId: player.memberId, text: `${player.nickname} TURN${drawn ? ` · DRAW ${drawn}` : ""}` });
+}
+
+function nextTurn(game) {
+  if (game.locked) return;
+  let next = game.current;
+  for (let count = 0; count < game.players.length; count++) {
+    next = (next + 1) % game.players.length;
+    if (!game.players[next].resigned) break;
+  }
+  game.current = next;
+  beginTurn(game);
+}
+
+function finishGame(game, reason, winner = null) {
+  const ranked = [...game.players].sort((a, b) => b.totalScore - a.totalScore || b.roundScore - a.roundScore);
+  const champion = winner || ranked[0] || null;
+  game.locked = true;
+  game.phase = "game-over";
+  game.turnDeadline = null;
+  game.result = {
+    id: `${game.round}:${game.turn}:${Date.now()}`,
+    reason,
+    winnerMemberId: champion?.memberId || null,
+    winnerNickname: champion?.nickname || "NO WINNER",
+    winnerScore: champion?.totalScore || 0,
+    at: Date.now()
+  };
+  pushLog(game, { type: "result", memberId: champion?.memberId, text: `${champion?.nickname || "NO WINNER"} WINS · ${reason}` });
+}
+
+function surrenderGamePlayer(game, memberId, reason = "SURRENDERED") {
+  if (!game || game.locked) return { ok: false };
+  const playerIndex = game.players.findIndex(player => player.memberId === memberId);
+  if (playerIndex < 0) return { ok: false };
+  const player = game.players[playerIndex];
+  if (player.resigned) return { ok: true };
+  const wasCurrent = playerIndex === game.current;
+  player.resigned = true;
+  player.hand = [];
+  pushLog(game, { type: "surrender", memberId, text: `${player.nickname} ${reason}` });
+  const active = game.players.filter(item => !item.resigned);
+  game.lastEvent = { seq: ++game.eventSeq, type: "surrender", at: Date.now(), memberId, nickname: player.nickname, winnerMemberId: active.length === 1 ? active[0].memberId : null };
+  if (active.length <= 1) finishGame(game, `${player.nickname} ${reason}`, active[0] || null);
+  else if (wasCurrent) {
+    nextTurn(game);
+    checkRoundEnd(game);
+  } else checkRoundEnd(game);
+  return { ok: true };
+}
+
+function checkRoundEnd(game) {
+  const active = game.players.filter(player => !player.resigned);
+  const noMoves = active.every(player => !player.hand.length || !legalMoves(game, player));
+  if (!game.deck.length && noMoves) {
+    finishGame(game, `ROUND ${game.round} COMPLETE`);
+    return true;
+  }
+  return false;
+}
+
+function createGame(members, twoCount = 8, turnSeconds = 0) {
+  const deck = makeDeck(twoCount);
+  const players = members
+    .filter(member => member.role === "player")
+    .sort((a, b) => a.joinedAt - b.joinedAt)
+    .map(member => ({ memberId: member.id, nickname: member.nickname, hand: [], roundScore: 0, totalScore: 0, resigned: false }));
+  const game = {
+    round: 1, turn: 0, current: 0, deck, deckTotal: deck.length, players,
+    board: {}, scoreMarks: [], scored: [], logs: [], logSeq: 0,
+    locked: false, phase: "playing", eventSeq: 0, lastEvent: null, twoCount,
+    turnSeconds, turnDeadline: null, result: null
+  };
+  for (const player of players) drawTiles(game, player, 2);
+  pushLog(game, { type: "round", text: "ROUND 1 START" });
+  beginTurn(game);
+  return game;
+}
+
+function gameAction(game, memberId, message) {
+  if (!game || game.locked) return { error: "GAME LOCKED" };
+  const playerIndex = game.players.findIndex(player => player.memberId === memberId);
+  if (playerIndex < 0) return { error: "WATCH MODE" };
+  const player = game.players[playerIndex];
+  const action = message.action;
+
+  if (action === "rotate") {
+    const tile = player.hand.find(tile => tile.id === Number(message.tileId));
+    if (!tile) return { error: "TILE NOT FOUND" };
+    tile.handRotation = ((tile.handRotation || 0) + (message.direction < 0 ? -1 : 1) + 6) % 6;
+    return { ok: true };
+  }
+
+  if (playerIndex !== game.current) return { error: "NOT YOUR TURN" };
+  if (player.resigned) return { error: "SURRENDERED" };
+
+  if (action === "place") {
+    const tileIndex = player.hand.findIndex(tile => tile.id === Number(message.tileId));
+    const cell = coordCell(message.coord);
+    if (tileIndex < 0 || !cell) return { error: "BAD TILE OR COORD" };
+    const tile = player.hand[tileIndex];
+    const boardStep = Math.max(0, Math.min(5, Math.trunc(Number(message.boardStep) || 0)));
+    const edges = rotate(tile.edges, (tile.handRotation || 0) - boardStep);
+    if (!canPlace(game, cell.q, cell.r, edges)) return { error: "NO MATCH" };
+    player.hand.splice(tileIndex, 1);
+    const key = K(cell.q, cell.r);
+    const placed = { ...tile, edges, q: cell.q, r: cell.r, owner: playerIndex };
+    game.board[key] = placed;
+    const scored = scorePlacement(game, key);
+    const points = scored.reduce((sum, result) => sum + result.points, 0);
+    const contacts = DIRS.reduce((sum, [dq, dr]) => sum + (game.board[K(cell.q + dq, cell.r + dr)] ? 1 : 0), 0);
+    if (points) {
+      player.roundScore += points;
+      player.totalScore += points;
+      for (const result of scored) game.scoreMarks.push({
+        id: `${game.eventSeq + 1}:${game.scoreMarks.length}`,
+        nodes: result.nodes, keys: result.keys, points: result.points, player: playerIndex
+      });
+      pushLog(game, { type: "score", memberId, key, points, tileCount: scored.reduce((sum, result) => sum + result.keys.length, 0), text: `${player.nickname} CLOSED · +${points}` });
+    } else pushLog(game, { type: "place", memberId, key, text: `${player.nickname} PLAYED ${tile.sides}-EDGE` });
+    game.lastEvent = { seq: ++game.eventSeq, type: "place", at: Date.now() + 180, memberId, key, tile: placed, contacts, scored, points };
+    if (!player.hand.length && !checkRoundEnd(game)) nextTurn(game);
+    return { ok: true };
+  }
+
+  if (action === "pass") {
+    pushLog(game, { type: "pass", memberId, text: `${player.nickname} PASSED` });
+    game.lastEvent = { seq: ++game.eventSeq, type: "pass", at: Date.now() + 80, memberId };
+    nextTurn(game);
+    checkRoundEnd(game);
+    return { ok: true };
+  }
+
+  if (action === "surrender") {
+    return surrenderGamePlayer(game, memberId);
+  }
+
+  return { error: "UNKNOWN ACTION" };
+}
+
+function publicGame(game, viewerId, role) {
+  if (!game) return null;
+  return {
+    round: game.round,
+    turn: game.turn,
+    current: game.current,
+    deckCount: game.deck.length,
+    deckTotal: game.deckTotal,
+    board: game.board,
+    scoreMarks: game.scoreMarks,
+    logs: game.logs,
+    locked: game.locked,
+    phase: game.phase,
+    result: game.result,
+    lastEvent: game.lastEvent,
+    turnSeconds: game.turnSeconds,
+    turnDeadline: game.turnDeadline,
+    players: game.players.map(player => ({
+      memberId: player.memberId,
+      nickname: player.nickname,
+      handCount: player.hand.length,
+      hand: role === "player" && player.memberId === viewerId ? player.hand : undefined,
+      roundScore: player.roundScore,
+      totalScore: player.totalScore,
+      resigned: player.resigned
+    }))
+  };
+}
+
+export default {
+  async fetch(request, env) {
+    if (request.method === "OPTIONS") return withCors(new Response(null, { status: 204 }), request);
+    const url = new URL(request.url);
+    let response;
+
+    if (url.pathname === "/api/health") response = json({ ok: true, service: "MFM ONLINE" });
+    else if (url.pathname === "/api/rooms" && request.method === "GET") {
+      const directory = env.DIRECTORY.get(env.DIRECTORY.idFromName("MFM_ROOM_DIRECTORY_V1"));
+      const listed = await directory.fetch("https://directory/list");
+      const { rooms: entries = [] } = await listed.json();
+      const rooms = [];
+      const stale = [];
+      await Promise.all(entries.map(async entry => {
+        const stub = env.ROOMS.get(env.ROOMS.idFromName(entry.code));
+        const infoResponse = await stub.fetch("https://room/info");
+        if (!infoResponse.ok) { stale.push(entry.code); return; }
+        rooms.push(await infoResponse.json());
+      }));
+      if (stale.length) await directory.fetch("https://directory/remove", { method: "POST", body: JSON.stringify({ codes: stale }) });
+      rooms.sort((a, b) => (a.phase === "lobby" ? 0 : 1) - (b.phase === "lobby" ? 0 : 1) || b.createdAt - a.createdAt);
+      response = json({ ok: true, rooms });
+    }
+    else if (url.pathname === "/api/rooms" && request.method === "POST") {
+      const body = await bodyJson(request);
+      if (!nicknameOk(body.nickname)) response = errorJson("CALLSIGN MUST BE 1–6 LETTERS OR NUMBERS");
+      else {
+        const code = randomCode();
+        const stub = env.ROOMS.get(env.ROOMS.idFromName(code));
+        response = await stub.fetch("https://room/create", { method: "POST", body: JSON.stringify({ ...body, code }) });
+        if (response.ok) {
+          const directory = env.DIRECTORY.get(env.DIRECTORY.idFromName("MFM_ROOM_DIRECTORY_V1"));
+          await directory.fetch("https://directory/register", { method: "POST", body: JSON.stringify({ code, createdAt: Date.now() }) });
+        }
+      }
+    } else {
+      const match = url.pathname.match(/^\/api\/rooms\/([A-Z2-9]{6})(?:\/(join))?$/i);
+      const wsMatch = url.pathname.match(/^\/ws\/([A-Z2-9]{6})$/i);
+      if (match) {
+        const code = match[1].toUpperCase();
+        const stub = env.ROOMS.get(env.ROOMS.idFromName(code));
+        response = match[2]
+          ? await stub.fetch("https://room/join", { method: "POST", body: await request.text() })
+          : await stub.fetch("https://room/info");
+        if (response.ok) {
+          const directory = env.DIRECTORY.get(env.DIRECTORY.idFromName("MFM_ROOM_DIRECTORY_V1"));
+          await directory.fetch("https://directory/register", { method: "POST", body: JSON.stringify({ code }) });
+        }
+      } else if (wsMatch) {
+        const code = wsMatch[1].toUpperCase();
+        const stub = env.ROOMS.get(env.ROOMS.idFromName(code));
+        return stub.fetch(new Request(`https://room/socket${url.search}`, request));
+      } else {
+        const asset = await env.ASSETS.fetch(request);
+        if (asset.status !== 404) return asset;
+        return env.ASSETS.fetch(new Request(new URL("./index.html", request.url), request));
+      }
+    }
+    return withCors(response, request);
+  }
+};
+
+export class RoomDirectory {
+  constructor(ctx) {
+    this.ctx = ctx;
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    const rooms = await this.ctx.storage.get("rooms") || {};
+    if (url.pathname === "/list") {
+      return json({ ok: true, rooms: Object.entries(rooms).map(([code, createdAt]) => ({ code, createdAt })) });
+    }
+    if (url.pathname === "/register" && request.method === "POST") {
+      const body = await bodyJson(request);
+      if (!roomCodeOk(body.code)) return errorJson("BAD ROOM CODE");
+      rooms[body.code.toUpperCase()] = Number(body.createdAt) || rooms[body.code.toUpperCase()] || Date.now();
+      const ordered = Object.entries(rooms).sort((a, b) => b[1] - a[1]).slice(0, 200);
+      await this.ctx.storage.put("rooms", Object.fromEntries(ordered));
+      return json({ ok: true });
+    }
+    if (url.pathname === "/remove" && request.method === "POST") {
+      const body = await bodyJson(request);
+      for (const code of body.codes || []) delete rooms[String(code).toUpperCase()];
+      await this.ctx.storage.put("rooms", rooms);
+      return json({ ok: true });
+    }
+    return errorJson("NOT FOUND", 404);
+  }
+}
+
+export class GameRoom {
+  constructor(ctx, env) {
+    this.ctx = ctx;
+    this.env = env;
+    this.room = null;
+    this.loaded = false;
+  }
+
+  async load() {
+    if (!this.loaded) {
+      this.room = await this.ctx.storage.get("room") || null;
+      this.loaded = true;
+    }
+    return this.room;
+  }
+
+  async save() {
+    if (this.room) await this.ctx.storage.put("room", this.room);
+  }
+
+  memberView(member) {
+    return {
+      id: member.id,
+      nickname: member.nickname,
+      role: member.role,
+      ready: member.ready,
+      connected: member.connected,
+      reconnectUntil: !member.connected && member.disconnectedAt ? member.disconnectedAt + 60_000 : null,
+      isHost: member.id === this.room.hostId,
+      joinedAt: member.joinedAt
+    };
+  }
+
+  snapshot(memberId) {
+    const self = this.room.members.find(member => member.id === memberId);
+    return {
+      code: this.room.code,
+      phase: this.room.phase,
+      hasPassword: Boolean(this.room.passwordHash),
+      turnSeconds: this.room.turnSeconds || 0,
+      hostId: this.room.hostId,
+      selfId: memberId,
+      members: this.room.members.map(member => this.memberView(member)),
+      game: publicGame(this.room.game, memberId, self?.role)
+    };
+  }
+
+  async fetch(request) {
+    await this.load();
+    const url = new URL(request.url);
+    if (url.pathname === "/create" && request.method === "POST") return this.create(request);
+    if (url.pathname === "/join" && request.method === "POST") return this.join(request);
+    if (url.pathname === "/info") return this.info();
+    if (url.pathname === "/socket") return this.socket(request);
+    return errorJson("NOT FOUND", 404);
+  }
+
+  async create(request) {
+    if (this.room) return errorJson("ROOM CODE COLLISION", 409);
+    const body = await bodyJson(request);
+    if (!nicknameOk(body.nickname) || !roomCodeOk(body.code)) return errorJson("BAD ROOM DATA");
+    const token = randomToken();
+    const member = {
+      id: crypto.randomUUID(), nickname: body.nickname.toUpperCase(), role: "player", ready: false,
+      connected: false, joinedAt: Date.now(), disconnectedAt: Date.now(), tokenHash: await digest(token)
+    };
+    this.room = {
+      code: body.code, phase: "lobby", hostId: member.id,
+      passwordHash: body.password ? await digest(body.password) : "",
+      turnSeconds: [30, 45, 60, 90].includes(Number(body.turnSeconds)) ? Number(body.turnSeconds) : 0,
+      members: [member], game: null, createdAt: Date.now()
+    };
+    await this.save();
+    await this.scheduleAlarm();
+    return json({ ok: true, code: this.room.code, token, memberId: member.id, role: member.role }, 201);
+  }
+
+  async join(request) {
+    if (!this.room) return errorJson("ROOM NOT FOUND", 404);
+    const body = await bodyJson(request);
+    if (!nicknameOk(body.nickname)) return errorJson("BAD CALLSIGN");
+    if (this.room.passwordHash && await digest(body.password || "") !== this.room.passwordHash) return errorJson("WRONG PASSWORD", 403);
+    const nickname = body.nickname.toUpperCase();
+    if (this.room.members.some(member => member.nickname === nickname)) return errorJson("CALLSIGN ALREADY IN ROOM", 409);
+    const role = body.role === "spectator" ? "spectator" : "player";
+    if (this.room.phase !== "lobby" && role !== "spectator") return errorJson("GAME ALREADY STARTED · WATCH ONLY", 409);
+    if (role === "player" && this.room.members.filter(member => member.role === "player").length >= 4) return errorJson("PLAYER SLOTS FULL", 409);
+    if (role === "spectator" && this.room.members.filter(member => member.role === "spectator").length >= 32) return errorJson("WATCH SLOTS FULL", 409);
+    const token = randomToken();
+    const member = {
+      id: crypto.randomUUID(), nickname, role, ready: false,
+      connected: false, joinedAt: Date.now(), disconnectedAt: Date.now(), tokenHash: await digest(token)
+    };
+    this.room.members.push(member);
+    await this.save();
+    await this.scheduleAlarm();
+    await this.broadcast();
+    return json({ ok: true, code: this.room.code, token, memberId: member.id, role });
+  }
+
+  async info() {
+    if (!this.room) return errorJson("ROOM NOT FOUND", 404);
+    let touched = false;
+    for (const member of this.room.members) if (!member.connected && !member.disconnectedAt) {
+      member.disconnectedAt = Date.now();
+      touched = true;
+    }
+    if (touched) {
+      await this.save();
+      await this.scheduleAlarm();
+    }
+    return json({ ok: true, code: this.room.code, phase: this.room.phase, hasPassword: Boolean(this.room.passwordHash), turnSeconds: this.room.turnSeconds || 0, createdAt: this.room.createdAt || 0, playerCount: this.room.members.filter(member => member.role === "player").length, watchCount: this.room.members.filter(member => member.role === "spectator").length });
+  }
+
+  async socket(request) {
+    if (!this.room) return errorJson("ROOM NOT FOUND", 404);
+    if (request.headers.get("Upgrade") !== "websocket") return errorJson("WEBSOCKET REQUIRED", 426);
+    const token = new URL(request.url).searchParams.get("token") || "";
+    const tokenHash = await digest(token);
+    const member = this.room.members.find(item => item.tokenHash === tokenHash);
+    if (!member) return errorJson("BAD SESSION", 401);
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+    this.ctx.acceptWebSocket(server, [member.id, member.role]);
+    server.serializeAttachment({ memberId: member.id });
+    member.connected = true;
+    member.disconnectedAt = null;
+    await this.save();
+    queueMicrotask(() => this.broadcast());
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  send(ws, data) {
+    try { if (ws.readyState === 1) ws.send(JSON.stringify(data)); } catch {}
+  }
+
+  async broadcast() {
+    if (!this.room) return;
+    for (const ws of this.ctx.getWebSockets()) {
+      const attachment = ws.deserializeAttachment();
+      if (attachment?.memberId) this.send(ws, { type: "state", room: this.snapshot(attachment.memberId) });
+    }
+  }
+
+  closeMemberSockets(memberId, code = 4001, reason = "REMOVED") {
+    for (const ws of this.ctx.getWebSockets(memberId)) {
+      try { ws.close(code, reason); } catch {}
+    }
+  }
+
+  transferHost() {
+    if (this.room.members.some(member => member.id === this.room.hostId)) return;
+    const candidate = [...this.room.members].sort((a, b) => a.joinedAt - b.joinedAt)[0];
+    this.room.hostId = candidate?.id || null;
+  }
+
+  removeMember(memberId) {
+    this.room.members = this.room.members.filter(member => member.id !== memberId);
+    this.transferHost();
+  }
+
+  async webSocketMessage(ws, raw) {
+    await this.load();
+    const attachment = ws.deserializeAttachment();
+    const member = this.room?.members.find(item => item.id === attachment?.memberId);
+    if (!member) { ws.close(4001, "SESSION EXPIRED"); return; }
+    let message;
+    try { message = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw)); }
+    catch { this.send(ws, { type: "error", error: "BAD MESSAGE" }); return; }
+
+    const host = member.id === this.room.hostId;
+    let error = "";
+    if (message.type === "ready") {
+      if (this.room.phase !== "lobby" || member.role !== "player") error = "READY NOT AVAILABLE";
+      else member.ready = !member.ready;
+    } else if (message.type === "start") {
+      const players = this.room.members.filter(item => item.role === "player");
+      if (!host) error = "HOST ONLY";
+      else if (this.room.phase !== "lobby") error = "ALREADY STARTED";
+      else if (players.length < 2) error = "NEED 2 PLAYERS";
+      else if (!players.every(player => player.ready)) error = "ALL PLAYERS MUST READY";
+      else {
+        this.room.game = createGame(this.room.members, Math.max(8, Math.min(15, Number(message.twoCount) || 8)), this.room.turnSeconds || 0);
+        this.room.phase = "game";
+      }
+    } else if (message.type === "role") {
+      const target = this.room.members.find(item => item.id === message.memberId);
+      const nextRole = message.role === "spectator" ? "spectator" : "player";
+      if (this.room.phase !== "lobby") error = "ROLE LOCKED";
+      else if (!host && target?.id !== member.id) error = "HOST ONLY";
+      else if (!target) error = "PLAYER NOT FOUND";
+      else if (nextRole === "player" && this.room.members.filter(item => item.role === "player").length >= 4) error = "PLAYER SLOTS FULL";
+      else { target.role = nextRole; target.ready = false; }
+    } else if (message.type === "kick") {
+      if (!host) error = "HOST ONLY";
+      else if (message.memberId === member.id) error = "USE LEAVE";
+      else if (!this.room.members.some(item => item.id === message.memberId)) error = "PLAYER NOT FOUND";
+      else {
+        if (this.room.phase === "game") surrenderGamePlayer(this.room.game, message.memberId, "REMOVED · SURRENDERED");
+        this.closeMemberSockets(message.memberId);
+        this.removeMember(message.memberId);
+      }
+    } else if (message.type === "leave") {
+      if (this.room.phase === "game" && member.role === "player") surrenderGamePlayer(this.room.game, member.id, "LEFT · SURRENDERED");
+      this.removeMember(member.id);
+      this.closeMemberSockets(member.id, 1000, "LEFT ROOM");
+    } else if (message.type === "game") {
+      if (this.room.phase !== "game") error = "GAME NOT STARTED";
+      else {
+        const result = gameAction(this.room.game, member.id, message);
+        error = result.error || "";
+      }
+    } else if (message.type !== "ping") error = "UNKNOWN MESSAGE";
+
+    if (error) this.send(ws, { type: "error", error });
+    await this.save();
+    await this.scheduleAlarm();
+    if (!this.room.members.length) {
+      await this.ctx.storage.deleteAll();
+      this.room = null;
+      return;
+    }
+    await this.broadcast();
+  }
+
+  async webSocketClose(ws) {
+    await this.load();
+    const attachment = ws.deserializeAttachment();
+    const member = this.room?.members.find(item => item.id === attachment?.memberId);
+    if (member) {
+      member.connected = false;
+      member.disconnectedAt = Date.now();
+      await this.save();
+      await this.scheduleAlarm();
+      await this.broadcast();
+    }
+  }
+
+  async webSocketError(ws) {
+    await this.webSocketClose(ws);
+  }
+
+  async scheduleAlarm() {
+    if (!this.room) return;
+    const deadlines = [];
+    if (this.room.phase === "game" && this.room.game?.turnDeadline) deadlines.push(this.room.game.turnDeadline);
+    for (const member of this.room.members) if (!member.connected && member.disconnectedAt) deadlines.push(member.disconnectedAt + 60_000);
+    if (deadlines.length) await this.ctx.storage.setAlarm(Math.max(Date.now() + 250, Math.min(...deadlines)));
+  }
+
+  async alarm() {
+    await this.load();
+    if (!this.room) return;
+    const now = Date.now();
+    const game = this.room.game;
+    if (this.room.phase === "game" && game?.turnDeadline && game.turnDeadline <= now && !game.locked) {
+      const player = game.players[game.current];
+      pushLog(game, { type: "pass", memberId: player.memberId, text: `${player.nickname} TIME OUT · AUTO PASS` });
+      game.lastEvent = { seq: ++game.eventSeq, type: "pass", auto: true, at: now, memberId: player.memberId };
+      nextTurn(game);
+      checkRoundEnd(game);
+    }
+    const cutoff = Date.now() - 60_000;
+    const expired = this.room.members.filter(member => !member.connected && member.disconnectedAt && member.disconnectedAt <= cutoff);
+    if (this.room.phase === "game") for (const member of expired) if (member.role === "player") surrenderGamePlayer(this.room.game, member.id, "LINK LOST · SURRENDERED");
+    this.room.members = this.room.members.filter(member => member.connected || !member.disconnectedAt || member.disconnectedAt > cutoff);
+    this.transferHost();
+    if (!this.room.members.length) {
+      await this.ctx.storage.deleteAll();
+      this.room = null;
+      return;
+    }
+    await this.save();
+    await this.broadcast();
+    await this.scheduleAlarm();
+  }
+}

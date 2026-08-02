@@ -1,0 +1,9 @@
+online/node_modules/
+online/.wrangler/
+online/.wrangler-dry/
+online/dist/
+.pnpm-store/
+*.log
+.DS_Store
+Thumbs.db
+

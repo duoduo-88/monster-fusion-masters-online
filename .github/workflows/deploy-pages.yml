@@ -1,0 +1,59 @@
+name: Deploy GitHub Player Page
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "online/client/**"
+      - "online/public/**"
+      - "online/scripts/**"
+      - "online/package.json"
+      - "online/pnpm-lock.yaml"
+      - "outputs/competitive-rule.html"
+      - ".github/workflows/deploy-pages.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: online
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: online/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run check
+      - run: pnpm run build
+      - name: Connect page to Cloudflare server
+        env:
+          API_BASE: ${{ vars.CLOUDFLARE_WORKER_URL }}
+        run: >-
+          node -e "if(!process.env.API_BASE)throw new Error('Set CLOUDFLARE_WORKER_URL in repository variables');require('fs').writeFileSync('dist/config.js','window.MFM_CONFIG = '+JSON.stringify({apiBase:process.env.API_BASE.replace(/\/$/,'')})+';\n')"
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: online/dist
+      - name: Publish player page
+        id: deployment
+        uses: actions/deploy-pages@v4
+
