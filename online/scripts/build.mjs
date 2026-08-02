@@ -30,6 +30,7 @@ await build({
 let gameHtml = await readFile(localGame, "utf8");
 gameHtml = gameHtml
   .replaceAll("../online/public/fonts/VT323-Regular.ttf", "./fonts/VT323-Regular.ttf")
+  .replaceAll("../online/public/retro-scrollbar.css", "./retro-scrollbar.css")
   .replace("</head>", '<link rel="stylesheet" href="./online-game.css"></head>')
   .replace("</body>", '<script src="./config.js"></script><script type="module" src="./game-online.js"></script></body>');
 await writeFile(resolve(dist, "game.html"), gameHtml, "utf8");

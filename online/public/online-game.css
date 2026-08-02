@@ -62,3 +62,14 @@ body[data-role="spectator"] .controls,body[data-role="spectator"] .coord-box{dis
 @keyframes intro-scan{to{transform:translateY(6px)}}@keyframes intro-static{0%{transform:translate(0)}50%{transform:translate(2px,-1px)}}@keyframes intro-hex{0%{transform:translate(-50%,-50%) scale(.25);opacity:.14}100%{transform:translate(-50%,-50%) scale(1.35);opacity:0}}@keyframes intro-draw{0%,100%{transform:translateX(-2px);opacity:.75}50%{transform:translateX(2px);opacity:1}}@keyframes intro-lock{0%{transform:scale(1.1);filter:brightness(2)}55%{transform:scale(.98)}100%{transform:scale(1);filter:none}}@keyframes intro-ready{0%,48%{opacity:1}49%,100%{opacity:.46}}@keyframes intro-launch{0%,70%{opacity:1}100%{opacity:0;transform:scale(1.035)}}
 @media(max-width:720px){.online-intro{padding:max(10px,env(safe-area-inset-top)) 8px max(10px,env(safe-area-inset-bottom))}.intro-panel{min-height:190px;padding:22px 12px}.intro-panel small{font-size:10pt}.intro-panel strong{font-size:clamp(30px,11vw,50px)}.intro-panel b{font-size:clamp(36px,15vw,68px)}}
 @media(prefers-reduced-motion:reduce){.online-intro,.online-intro::before,.online-intro::after,.intro-static,.intro-panel,.intro-panel strong,.intro-panel b{animation:none!important}}
+
+/* Online gameplay typography floor: normal copy is 12pt; compact helper text
+   never drops below 11pt on desktop or mobile. */
+body[data-online="true"] .online-room-tag,.online-status,.result-reason,
+.intro-panel small{font-size:12pt}
+.turn-progress-value,.spectator-hand-row>strong,.result-kicker{font-size:11pt}
+@media(max-width:720px){
+  body[data-online="true"] .side::before,body[data-online="true"] .dock::after,
+  .mobile-turn-copy small,.intro-panel small{font-size:11pt}
+  .mobile-turn-copy strong,.mobile-self-timer .turn-progress-value{font-size:12pt}
+}

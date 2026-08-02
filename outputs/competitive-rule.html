@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#000000">
   <link rel="preload" href="../online/public/fonts/VT323-Regular.ttf" as="font" type="font/ttf" crossorigin>
   <title>Monster Fusion Masters · Competitive Rule</title>
+  <link rel="stylesheet" href="../online/public/retro-scrollbar.css">
   <style>
     @font-face{font-family:"MFM Pixel";src:url("../online/public/fonts/VT323-Regular.ttf") format("truetype");font-style:normal;font-weight:400;font-display:block}
     :root {
@@ -88,7 +89,7 @@
     .player-meta:empty{display:none!important}
     .log-card{padding:10px;min-height:0;display:flex;flex-direction:column}
     .section-title{font-size:11pt;letter-spacing:.14em;color:var(--accent);margin:0 0 7px}
-    #log{flex:1;min-height:0;margin:0;padding:0;list-style:none;overflow:auto;font-size:11pt;line-height:1.45;color:#c5c2ae;scrollbar-color:#4a5263 #11151d}
+    #log{flex:1;min-height:0;margin:0;padding:0 8px 0 0;list-style:none;overflow:auto;scrollbar-gutter:stable;font-size:11pt;line-height:1.45;color:#c5c2ae}
     #log li{position:relative;padding:6px 0 7px;border-bottom:1px dashed #343a47}
     #log li.inspectable{cursor:pointer;padding-left:12px;transition:background-color .12s,color .12s}
     #log li.inspectable::before{content:'>';position:absolute;left:1px;color:#777b6d}
@@ -162,6 +163,13 @@
     @media (max-width:560px){
       header{min-height:48px;padding:5px 5px 5px 9px}.logo-mark{transform:scale(.3);margin-right:-571px}.subtitle{display:none}.pix-btn{padding:8px}.side{top:62px;right:8px;width:160px}.round-card{display:none}.player{padding:5px 7px}.player.active{padding-left:11px}.player-meta{display:none}.score{font-size:15px}.dock{min-height:380px;grid-template-columns:1fr}.controls{justify-self:start}.hand-wrap{grid-template-columns:86px minmax(0,1fr)}.coord-box{grid-column:1/-1;width:100%;height:auto;grid-template-columns:auto minmax(80px,1fr) auto;grid-template-rows:32px;align-items:center}.coord-title{padding:0 7px}#coordPlace{width:94px}.setup-grid,.names{grid-template-columns:1fr}
     }
+    /* Pixel fonts look optically smaller than proportional fonts. Keep normal
+       gameplay copy at 12pt (16px) so it remains comfortably above 11pt. */
+    .subtitle,.turn-chip,.board-round,.board-turn,.board-turn strong,
+    .eyebrow,.deck-line,.player-meta,.section-title,#log,
+    #log li.turn-break::after,#log li.round-break::after,#handCount,
+    .controls .pix-btn,#passBtn,.coord-title,#coordInput,#coordPlace,
+    .modal p,.field,.rule-list,.setting-head{font-size:12pt}
   </style>
 </head>
 <body>
