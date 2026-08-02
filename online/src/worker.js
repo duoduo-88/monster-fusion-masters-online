@@ -4,6 +4,9 @@ const RADIUS = 4;
 const MAX_HAND = 5;
 const RECONNECT_GRACE_MS = 120_000;
 const GAME_INTRO_MS = 8_000;
+const ACCESS_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
+const ACCESS_ATTEMPT_LIMIT = 8;
+const ACCESS_ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
 
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), {
   status,
@@ -33,6 +36,91 @@ async function digest(value) {
   return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
+function base64UrlEncode(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
+function base64UrlDecode(value) {
+  if (!/^[A-Za-z0-9_-]+$/.test(String(value || ""))) return null;
+  try {
+    const normalized = String(value).replaceAll("-", "+").replaceAll("_", "/");
+    const binary = atob(normalized + "=".repeat((4 - normalized.length % 4) % 4));
+    return Uint8Array.from(binary, char => char.charCodeAt(0));
+  } catch { return null; }
+}
+
+function constantTimeEqual(left, right) {
+  if (!(left instanceof Uint8Array) || !(right instanceof Uint8Array) || left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index++) difference |= left[index] ^ right[index];
+  return difference === 0;
+}
+
+async function secureTextEqual(left, right) {
+  const encoder = new TextEncoder();
+  const [leftHash, rightHash] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(String(left))),
+    crypto.subtle.digest("SHA-256", encoder.encode(String(right)))
+  ]);
+  return constantTimeEqual(new Uint8Array(leftHash), new Uint8Array(rightHash));
+}
+
+async function accessSignature(secret, payload) {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(payload)));
+}
+
+async function issueAccessToken(env, nickname) {
+  const now = Date.now();
+  const payload = base64UrlEncode(new TextEncoder().encode(JSON.stringify({
+    v: 1,
+    nickname,
+    issuedAt: now,
+    expiresAt: now + ACCESS_TOKEN_TTL_MS,
+    nonce: randomToken().slice(0, 24)
+  })));
+  const signature = base64UrlEncode(await accessSignature(env.TEST_TOKEN_SECRET, payload));
+  return { token: `${payload}.${signature}`, expiresAt: now + ACCESS_TOKEN_TTL_MS };
+}
+
+async function verifyAccessToken(token, env) {
+  if (!env.TEST_TOKEN_SECRET || !token) return null;
+  const [payloadPart, signaturePart, extra] = String(token).split(".");
+  if (!payloadPart || !signaturePart || extra !== undefined) return null;
+  const supplied = base64UrlDecode(signaturePart);
+  if (!supplied) return null;
+  const expected = await accessSignature(env.TEST_TOKEN_SECRET, payloadPart);
+  if (!constantTimeEqual(supplied, expected)) return null;
+  const bytes = base64UrlDecode(payloadPart);
+  if (!bytes) return null;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(bytes));
+    const now = Date.now();
+    if (payload.v !== 1 || !nicknameOk(payload.nickname) || !Number.isSafeInteger(payload.expiresAt)) return null;
+    if (payload.expiresAt <= now || payload.expiresAt > now + ACCESS_TOKEN_TTL_MS + 60_000) return null;
+    return payload;
+  } catch { return null; }
+}
+
+function bearerToken(request) {
+  const match = request.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i);
+  return match?.[1] || "";
+}
+
+async function recordInviteAttempt(env, request, success) {
+  const address = request.headers.get("cf-connecting-ip") || request.headers.get("x-forwarded-for") || "local";
+  const key = await digest(`mfm-test-access:${address}`);
+  const directory = env.DIRECTORY.get(env.DIRECTORY.idFromName("MFM_ROOM_DIRECTORY_V1"));
+  const response = await directory.fetch("https://directory/access-attempt", {
+    method: "POST",
+    body: JSON.stringify({ key, success, now: Date.now() })
+  });
+  return response.json();
+}
+
 async function bodyJson(request) {
   try { return await request.json(); } catch { return {}; }
 }
@@ -42,7 +130,7 @@ function withCors(response, request) {
   const origin = request.headers.get("origin") || "*";
   headers.set("access-control-allow-origin", origin);
   headers.set("access-control-allow-methods", "GET,POST,OPTIONS");
-  headers.set("access-control-allow-headers", "content-type");
+  headers.set("access-control-allow-headers", "content-type,authorization");
   headers.set("vary", "Origin");
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
@@ -518,7 +606,29 @@ export default {
     const url = new URL(request.url);
     let response;
 
-    if (url.pathname === "/api/health") response = json({ ok: true, service: "MFM ONLINE" });
+    if (url.pathname === "/api/access" && request.method === "POST") {
+      if (!env.TEST_INVITE_CODE || !env.TEST_TOKEN_SECRET) response = errorJson("TEST ACCESS NOT CONFIGURED", 503);
+      else {
+        const body = await bodyJson(request);
+        const nickname = String(body.nickname || "").trim().toUpperCase();
+        const suppliedCode = String(body.testCode || "").trim().toLowerCase();
+        const expectedCode = String(env.TEST_INVITE_CODE).trim().toLowerCase();
+        const valid = nicknameOk(nickname) && await secureTextEqual(suppliedCode, expectedCode);
+        const rate = await recordInviteAttempt(env, request, valid);
+        if (!valid) response = errorJson(rate.allowed ? "INVALID CALLSIGN OR TEST CODE" : "TOO MANY ATTEMPTS · TRY LATER", rate.allowed ? 401 : 429);
+        else response = json({ ok: true, ...(await issueAccessToken(env, nickname)) }, 200, { "cache-control": "no-store" });
+      }
+    }
+    else if (url.pathname === "/api/access" && request.method === "GET") {
+      const access = await verifyAccessToken(bearerToken(request), env);
+      response = access
+        ? json({ ok: true, nickname: access.nickname, expiresAt: access.expiresAt }, 200, { "cache-control": "no-store" })
+        : errorJson("TEST ACCESS REQUIRED", 401);
+    }
+    else if (url.pathname === "/api/health") response = json({ ok: true, service: "MFM ONLINE" });
+    else if ((url.pathname === "/api/rooms" || /^\/api\/rooms\//i.test(url.pathname)) && !(await verifyAccessToken(bearerToken(request), env))) {
+      response = errorJson("TEST ACCESS REQUIRED", 401);
+    }
     else if (url.pathname === "/api/rooms" && request.method === "GET") {
       const directory = env.DIRECTORY.get(env.DIRECTORY.idFromName("MFM_ROOM_DIRECTORY_V1"));
       const listed = await directory.fetch("https://directory/list");
@@ -561,9 +671,12 @@ export default {
           await directory.fetch("https://directory/register", { method: "POST", body: JSON.stringify({ code }) });
         }
       } else if (wsMatch) {
+        const access = await verifyAccessToken(url.searchParams.get("access") || "", env);
+        if (!access) return errorJson("TEST ACCESS REQUIRED", 401);
         const code = wsMatch[1].toUpperCase();
         const stub = env.ROOMS.get(env.ROOMS.idFromName(code));
-        return stub.fetch(new Request(`https://room/socket${url.search}`, request));
+        const roomToken = url.searchParams.get("token") || "";
+        return stub.fetch(new Request(`https://room/socket?token=${encodeURIComponent(roomToken)}`, request));
       } else {
         const asset = await env.ASSETS.fetch(request);
         if (asset.status !== 404) return asset;
@@ -582,6 +695,23 @@ export class RoomDirectory {
   async fetch(request) {
     const url = new URL(request.url);
     const rooms = await this.ctx.storage.get("rooms") || {};
+    if (url.pathname === "/access-attempt" && request.method === "POST") {
+      const body = await bodyJson(request);
+      const now = Number(body.now) || Date.now();
+      const key = String(body.key || "");
+      const attempts = await this.ctx.storage.get("accessAttempts") || {};
+      for (const [entryKey, entry] of Object.entries(attempts)) if (!entry?.expiresAt || entry.expiresAt <= now) delete attempts[entryKey];
+      if (body.success) delete attempts[key];
+      else if (key) {
+        const entry = attempts[key] || { count: 0, expiresAt: now + ACCESS_ATTEMPT_WINDOW_MS };
+        entry.count++;
+        attempts[key] = entry;
+      }
+      const ordered = Object.entries(attempts).sort((a, b) => b[1].expiresAt - a[1].expiresAt).slice(0, 500);
+      await this.ctx.storage.put("accessAttempts", Object.fromEntries(ordered));
+      const current = attempts[key];
+      return json({ ok: true, allowed: !current || current.count <= ACCESS_ATTEMPT_LIMIT, retryAt: current?.expiresAt || null });
+    }
     if (url.pathname === "/list") {
       return json({ ok: true, rooms: Object.entries(rooms).map(([code, createdAt]) => ({ code, createdAt })) });
     }

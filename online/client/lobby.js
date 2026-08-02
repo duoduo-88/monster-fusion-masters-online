@@ -14,6 +14,7 @@ const apiBase = String(window.MFM_CONFIG?.apiBase || "").replace(/\/$/, "") || l
 const store = sessionStorage;
 const state = {
   nickname: store.getItem("mfm:nickname") || "",
+  accessToken: store.getItem("mfm:test-access") || "",
   room: null,
   code: "",
   token: "",
@@ -85,13 +86,31 @@ function setLink(online, text = online ? "ONLINE" : "OFFLINE") {
 }
 
 async function request(path, options = {}) {
+  const { auth = true, ...fetchOptions } = options;
+  const headers = { "content-type": "application/json", ...(options.headers || {}) };
+  if (auth && state.accessToken) headers.authorization = `Bearer ${state.accessToken}`;
   const response = await fetch(`${apiBase}${path}`, {
-    ...options,
-    headers: { "content-type": "application/json", ...(options.headers || {}) }
+    ...fetchOptions,
+    headers
   });
   const data = await response.json().catch(() => ({ error: "BAD SERVER RESPONSE" }));
+  if (response.status === 401 && data.error === "TEST ACCESS REQUIRED") clearIdentity("TEST ACCESS EXPIRED");
   if (!response.ok || data.ok === false) throw new Error(data.error || `SERVER ${response.status}`);
   return data;
+}
+
+function clearIdentity(message = "") {
+  store.removeItem("mfm:nickname");
+  store.removeItem("mfm:test-access");
+  state.nickname = "";
+  state.accessToken = "";
+  state.intentionalClose = true;
+  state.socket?.close(1000, "TEST ACCESS ENDED");
+  $("#nickname").value = "";
+  $("#testCode").value = "";
+  $("#nicknameView").textContent = "------";
+  $("#identityError").textContent = message;
+  setScreen("identity");
 }
 
 function saveSession(data) {
@@ -179,7 +198,7 @@ function wsUrl() {
   const base = new URL(apiBase);
   base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
   base.pathname = `/ws/${state.code}`;
-  base.search = new URLSearchParams({ token: state.token }).toString();
+  base.search = new URLSearchParams({ token: state.token, access: state.accessToken }).toString();
   return base.href;
 }
 
@@ -327,7 +346,7 @@ function enterGame() {
 async function resumeInvite() {
   const code = new URLSearchParams(location.search).get("room")?.toUpperCase();
   if (code) $("#joinCode").value = code;
-  if (!state.nickname) return;
+  if (!state.nickname || !state.accessToken) return;
   setScreen("lobby");
   if (!code) return;
   const saved = JSON.parse(store.getItem(`mfm:room:${code}`) || "null");
@@ -339,23 +358,34 @@ async function resumeInvite() {
   }
 }
 
-$("#identityForm").addEventListener("submit", event => {
+$("#identityForm").addEventListener("submit", async event => {
   event.preventDefault();
   const nickname = $("#nickname").value.trim().toUpperCase();
   if (!nicknameValid(nickname)) { $("#identityError").textContent = "USE 1–6 LETTERS OR NUMBERS"; return; }
-  state.nickname = nickname;
-  store.setItem("mfm:nickname", nickname);
-  $("#nicknameView").textContent = nickname;
-  $("#identityError").textContent = "";
-  setScreen("lobby");
-  resumeInvite();
+  const testCode = $("#testCode").value.trim();
+  const submit = event.submitter;
+  if (submit) submit.disabled = true;
+  $("#identityError").textContent = "VERIFYING TEST ACCESS...";
+  try {
+    const access = await request("/api/access", { method: "POST", auth: false, body: JSON.stringify({ nickname, testCode }) });
+    state.nickname = nickname;
+    state.accessToken = access.token;
+    store.setItem("mfm:nickname", nickname);
+    store.setItem("mfm:test-access", access.token);
+    $("#testCode").value = "";
+    $("#nicknameView").textContent = nickname;
+    $("#identityError").textContent = "";
+    setScreen("lobby");
+    resumeInvite();
+  } catch (error) {
+    $("#identityError").textContent = error.message;
+  } finally {
+    if (submit) submit.disabled = false;
+  }
 });
 
 $("#changeNickname").addEventListener("click", () => {
-  store.removeItem("mfm:nickname");
-  state.nickname = "";
-  $("#nickname").value = "";
-  setScreen("identity");
+  clearIdentity();
 });
 
 function syncCustomTimer() {
@@ -439,8 +469,20 @@ drawNoise();
 setInterval(drawNoise, 180);
 state.roomRefreshTimer = setInterval(refreshRoomList, 5000);
 setInterval(updateReconnectLabels, 250);
-$("#nickname").value = state.nickname;
-$("#nicknameView").textContent = state.nickname || "------";
-setScreen(state.nickname ? "lobby" : "identity");
-resumeInvite();
+async function boot() {
+  $("#nickname").value = state.nickname;
+  $("#nicknameView").textContent = state.nickname || "------";
+  if (!state.nickname || !state.accessToken) {
+    setScreen("identity");
+    return;
+  }
+  try {
+    await request("/api/access");
+    setScreen("lobby");
+    resumeInvite();
+  } catch {
+    clearIdentity("ENTER TEST CODE AGAIN");
+  }
+}
+boot();
 request("/api/health").then(() => setLink(true, "SERVER")).catch(() => setLink(false, apiBase === location.origin ? "LOCAL" : "OFFLINE"));

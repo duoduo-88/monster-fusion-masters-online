@@ -2,8 +2,10 @@ online/node_modules/
 online/.wrangler/
 online/.wrangler-dry/
 online/dist/
+online/.dev.vars
+online/.dev.vars.*
+!online/.dev.vars.example
 .pnpm-store/
 *.log
 .DS_Store
 Thumbs.db
-

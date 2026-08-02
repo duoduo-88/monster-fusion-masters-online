@@ -3,6 +3,7 @@ const roomCode = params.get("room")?.toUpperCase() || "";
 const memberId = params.get("member") || "";
 const role = params.get("role") === "spectator" ? "spectator" : "player";
 const saved = JSON.parse(sessionStorage.getItem(`mfm:room:${roomCode}`) || "null");
+const accessToken = sessionStorage.getItem("mfm:test-access") || "";
 const apiBase = String(window.MFM_CONFIG?.apiBase || "").replace(/\/$/, "") || location.origin;
 let socket = null;
 let roomState = null;
@@ -19,14 +20,14 @@ let serverClockOffset = 0;
 const GAME_INTRO_MS = 8000;
 const PLAYER_COLORS = ["#6cbebc", "#d3655d", "#c8a951", "#8c78c4"];
 
-if (!roomCode || !memberId || !saved?.token || !window.MFMBridge) location.replace("./");
+if (!roomCode || !memberId || !saved?.token || !accessToken || !window.MFMBridge) location.replace("./");
 else start();
 
 function webSocketUrl() {
   const url = new URL(apiBase);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.pathname = `/ws/${roomCode}`;
-  url.search = new URLSearchParams({ token: saved.token }).toString();
+  url.search = new URLSearchParams({ token: saved.token, access: accessToken }).toString();
   return url.href;
 }
 

@@ -28,12 +28,16 @@
       <div class="screen-copy">
         <span class="step">01 / ID</span>
         <h2>CREATE CALLSIGN</h2>
-        <p>Use 1–6 English letters or numbers. Your callsign disappears when this tab closes.</p>
+        <p>Use 1–6 English letters or numbers. A private test code is required. Both disappear when this tab closes.</p>
       </div>
       <form id="identityForm" class="terminal-form">
         <label for="nickname">CALLSIGN</label>
         <div class="input-row">
           <span>&gt;</span><input id="nickname" name="nickname" maxlength="6" pattern="[A-Za-z0-9]{1,6}" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="CYAN01" required>
+        </div>
+        <label for="testCode">TEST CODE</label>
+        <div class="input-row test-code-row">
+          <span>&gt;</span><input id="testCode" name="testCode" maxlength="32" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="REQUIRED" required>
         </div>
         <output class="form-error" id="identityError"></output>
         <button class="pix-btn primary" type="submit">ENTER LOBBY</button>
