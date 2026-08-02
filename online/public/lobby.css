@@ -1,8 +1,9 @@
+@font-face{font-family:"MFM Pixel";src:url("./fonts/VT323-Regular.ttf") format("truetype");font-style:normal;font-weight:400;font-display:block}
 :root{--ink:#f1eedc;--muted:#878679;--line:#48483f;--accent:#72aa83;--danger:#c94b4b;--gold:#c8a951;--cyan:#6cbebc;--panel:#050605}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 .sr-only{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
-html,body{margin:0;min-height:100%;background:#000;color:var(--ink);font-family:Fixedsys,"MS Gothic",Consolas,"Courier New",monospace}
+html,body{margin:0;min-height:100%;background:#000;color:var(--ink);font-family:"MFM Pixel",monospace;font-style:normal;font-weight:400;font-synthesis:none;font-kerning:none}
 body{overflow-x:hidden;text-shadow:0 0 1px rgba(241,238,220,.22)}
 body::before{content:"";position:fixed;inset:0;z-index:50;pointer-events:none;background:repeating-linear-gradient(180deg,transparent 0 3px,rgba(0,0,0,.13) 3px 4px),repeating-linear-gradient(90deg,rgba(255,90,80,.012) 0 1px,rgba(90,255,150,.009) 1px 2px,rgba(90,130,255,.012) 2px 3px);opacity:.72;animation:scan .7s linear infinite}
 body::after{content:"";position:fixed;inset:0;z-index:51;pointer-events:none;background:radial-gradient(ellipse at 24% -5%,rgba(255,255,255,.11),transparent 38%),linear-gradient(112deg,rgba(255,255,255,.04),transparent 22% 70%,rgba(255,255,255,.018))}

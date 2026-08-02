@@ -4,8 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#000000">
+  <link rel="preload" href="../online/public/fonts/VT323-Regular.ttf" as="font" type="font/ttf" crossorigin>
   <title>Monster Fusion Masters · Competitive Rule</title>
   <style>
+    @font-face{font-family:"MFM Pixel";src:url("../online/public/fonts/VT323-Regular.ttf") format("truetype");font-style:normal;font-weight:400;font-display:block}
     :root {
       --ink:#f1eedc; --muted:#8d8a7b; --panel:#000; --panel2:#000;
       --line:#45453c; --accent:#72aa83; --danger:#c94b4b; --gold:#c8a951; --pass:#b86f43; --pass-ink:#dfa06b;
@@ -13,7 +15,7 @@
     }
     *{box-sizing:border-box}
     [hidden]{display:none!important}
-    html,body{margin:0;min-height:100%;background:#000;color:var(--ink);font-family:Fixedsys,"Perfect DOS VGA 437","MS Gothic",Consolas,"Courier New",monospace}
+    html,body{margin:0;min-height:100%;background:#000;color:var(--ink);font-family:"MFM Pixel",monospace;font-style:normal;font-weight:400;font-synthesis:none;font-kerning:none}
     body{overflow:hidden;background:#000;text-shadow:0 0 1.2px rgba(241,238,220,.2)}
     body::before{content:"";position:fixed;inset:-2px;z-index:9997;pointer-events:none;background:repeating-linear-gradient(180deg,transparent 0 2.15px,rgba(0,0,0,.035) 2.15px 2.45px,rgba(0,0,0,.105) 2.45px 2.85px,rgba(0,0,0,.035) 2.85px 3.15px,transparent 3.15px 4px),repeating-linear-gradient(90deg,rgba(255,96,82,.018) 0 .45px,rgba(255,96,82,.006) .45px .7px,rgba(92,255,160,.014) .7px 1.15px,rgba(92,255,160,.004) 1.15px 1.4px,rgba(104,142,255,.018) 1.4px 1.85px,rgba(104,142,255,.004) 1.85px 2.1px);filter:blur(.28px);opacity:.82;animation:crt-scan-roll .7s linear infinite,crt-flicker .0833s steps(1,end) infinite;will-change:background-position,opacity}
     body::after{content:"";position:fixed;inset:0;z-index:9999;pointer-events:none;background:radial-gradient(ellipse at 27% -10%,rgba(255,255,255,.13),transparent 38%),linear-gradient(115deg,rgba(255,255,255,.052) 0 10%,transparent 19% 52%,rgba(255,255,255,.02) 59% 65%,transparent 73%),linear-gradient(180deg,rgba(255,255,255,.022),transparent 25%);box-shadow:inset 0 0 34px rgba(175,220,205,.025)}
