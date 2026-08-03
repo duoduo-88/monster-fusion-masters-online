@@ -634,12 +634,12 @@ function gameAction(game, memberId, message) {
     return { ok: true };
   }
 
-  if (game.settleUntil && game.settleUntil > Date.now()) return { error: "BOARD SETTLING" };
-
   if (playerIndex !== game.current) return { error: "NOT YOUR TURN" };
   if (player.resigned) return { error: "SURRENDERED" };
 
   if (action === "place" || action === "placeBatch") return placeTilesAtomically(game, playerIndex, memberId, message);
+
+  if (game.settleUntil && game.settleUntil > Date.now()) return { error: "BOARD SETTLING" };
 
   if (action === "pass") {
     pushLog(game, { type: "pass", memberId, text: `${player.nickname} PASSED` });
