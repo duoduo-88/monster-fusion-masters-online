@@ -508,6 +508,101 @@ function createGame(members, twoCount = 8, turnSeconds = 0) {
   return game;
 }
 
+function normalizedPlacementSpecs(message) {
+  const source = message.action === "placeBatch" ? message.placements : [{
+    tileId: message.tileId,
+    coord: message.coord,
+    boardStep: message.boardStep
+  }];
+  if (!Array.isArray(source) || !source.length || source.length > MAX_HAND) return null;
+  const seenTiles = new Set();
+  const seenCells = new Set();
+  const specs = [];
+  for (const raw of source) {
+    const tileId = Number(raw?.tileId);
+    const cell = coordCell(raw?.coord);
+    const boardStep = Math.max(0, Math.min(5, Math.trunc(Number(raw?.boardStep) || 0)));
+    if (!Number.isInteger(tileId) || !cell) return null;
+    const key = K(cell.q, cell.r);
+    if (seenTiles.has(tileId) || seenCells.has(key)) return null;
+    seenTiles.add(tileId);
+    seenCells.add(key);
+    specs.push({ tileId, cell, key, boardStep });
+  }
+  return specs;
+}
+
+function placeTilesAtomically(game, playerIndex, memberId, message) {
+  const specs = normalizedPlacementSpecs(message);
+  if (!specs) return { error: "BAD PLACEMENT SET" };
+
+  // Validate against a temporary game so a rejected batch never leaves a
+  // partially mutated hand, board, score list, or log behind.
+  const next = structuredClone(game);
+  const player = next.players[playerIndex];
+  const eventSeq = game.eventSeq + 1;
+  const placements = [];
+  let batchPoints = 0;
+
+  for (let index = 0; index < specs.length; index++) {
+    const spec = specs[index];
+    const tileIndex = player.hand.findIndex(tile => tile.id === spec.tileId);
+    if (tileIndex < 0) return { error: "TILE NOT FOUND" };
+    const tile = player.hand[tileIndex];
+    const edges = rotate(tile.edges, (tile.handRotation || 0) - spec.boardStep);
+    if (!canPlace(next, spec.cell.q, spec.cell.r, edges)) return { error: "NO MATCH" };
+
+    player.hand.splice(tileIndex, 1);
+    const placed = { ...tile, edges, q: spec.cell.q, r: spec.cell.r, owner: playerIndex };
+    next.board[spec.key] = placed;
+    const scored = scorePlacement(next, spec.key);
+    const points = scored.reduce((sum, result) => sum + result.points, 0);
+    const contacts = DIRS.reduce((sum, [dq, dr]) => sum + (next.board[K(spec.cell.q + dq, spec.cell.r + dr)] ? 1 : 0), 0);
+    const delay = index === 0 ? 0 : index * 105 + ((eventSeq * 41 + index * 67) % 71);
+    batchPoints += points;
+
+    if (points) {
+      player.roundScore += points;
+      player.totalScore += points;
+      for (let markIndex = 0; markIndex < scored.length; markIndex++) {
+        const result = scored[markIndex];
+        next.scoreMarks.push({
+          id: `${eventSeq}:${index}:${markIndex}`,
+          nodes: result.nodes,
+          keys: result.keys,
+          points: result.points,
+          player: playerIndex
+        });
+      }
+      pushLog(next, {
+        type: "score", memberId, key: spec.key, points,
+        tileCount: scored.reduce((sum, result) => sum + result.keys.length, 0),
+        text: `${player.nickname} CLOSED · +${points}`
+      });
+    } else {
+      pushLog(next, { type: "place", memberId, key: spec.key, text: `${player.nickname} PLAYED ${tile.sides}-EDGE` });
+    }
+    placements.push({ key: spec.key, tile: placed, contacts, scored, points, delay });
+  }
+
+  next.eventSeq = eventSeq;
+  next.lastEvent = {
+    seq: eventSeq,
+    type: placements.length > 1 ? "place-batch" : "place",
+    at: Date.now() + 180,
+    memberId,
+    key: placements[0].key,
+    tile: placements[0].tile,
+    contacts: placements[0].contacts,
+    scored: placements.flatMap(item => item.scored),
+    points: batchPoints,
+    placements
+  };
+  if (!player.hand.length && !checkRoundEnd(next)) nextTurn(next);
+  Object.assign(game, next);
+  return { ok: true };
+}
+
 function gameAction(game, memberId, message) {
   if (!game || game.locked) return { error: "GAME LOCKED" };
   const playerIndex = game.players.findIndex(player => player.memberId === memberId);
@@ -522,37 +617,19 @@ function gameAction(game, memberId, message) {
     return { ok: true };
   }
 
+  if (action === "reorder") {
+    const ids = Array.isArray(message.tileIds) ? message.tileIds.map(Number) : [];
+    const currentIds = player.hand.map(tile => tile.id);
+    if (ids.length !== currentIds.length || new Set(ids).size !== ids.length || ids.some(id => !currentIds.includes(id))) return { error: "BAD HAND ORDER" };
+    const tiles = new Map(player.hand.map(tile => [tile.id, tile]));
+    player.hand = ids.map(id => tiles.get(id));
+    return { ok: true };
+  }
+
   if (playerIndex !== game.current) return { error: "NOT YOUR TURN" };
   if (player.resigned) return { error: "SURRENDERED" };
 
-  if (action === "place") {
-    const tileIndex = player.hand.findIndex(tile => tile.id === Number(message.tileId));
-    const cell = coordCell(message.coord);
-    if (tileIndex < 0 || !cell) return { error: "BAD TILE OR COORD" };
-    const tile = player.hand[tileIndex];
-    const boardStep = Math.max(0, Math.min(5, Math.trunc(Number(message.boardStep) || 0)));
-    const edges = rotate(tile.edges, (tile.handRotation || 0) - boardStep);
-    if (!canPlace(game, cell.q, cell.r, edges)) return { error: "NO MATCH" };
-    player.hand.splice(tileIndex, 1);
-    const key = K(cell.q, cell.r);
-    const placed = { ...tile, edges, q: cell.q, r: cell.r, owner: playerIndex };
-    game.board[key] = placed;
-    const scored = scorePlacement(game, key);
-    const points = scored.reduce((sum, result) => sum + result.points, 0);
-    const contacts = DIRS.reduce((sum, [dq, dr]) => sum + (game.board[K(cell.q + dq, cell.r + dr)] ? 1 : 0), 0);
-    if (points) {
-      player.roundScore += points;
-      player.totalScore += points;
-      for (const result of scored) game.scoreMarks.push({
-        id: `${game.eventSeq + 1}:${game.scoreMarks.length}`,
-        nodes: result.nodes, keys: result.keys, points: result.points, player: playerIndex
-      });
-      pushLog(game, { type: "score", memberId, key, points, tileCount: scored.reduce((sum, result) => sum + result.keys.length, 0), text: `${player.nickname} CLOSED · +${points}` });
-    } else pushLog(game, { type: "place", memberId, key, text: `${player.nickname} PLAYED ${tile.sides}-EDGE` });
-    game.lastEvent = { seq: ++game.eventSeq, type: "place", at: Date.now() + 180, memberId, key, tile: placed, contacts, scored, points };
-    if (!player.hand.length && !checkRoundEnd(game)) nextTurn(game);
-    return { ok: true };
-  }
+  if (action === "place" || action === "placeBatch") return placeTilesAtomically(game, playerIndex, memberId, message);
 
   if (action === "pass") {
     pushLog(game, { type: "pass", memberId, text: `${player.nickname} PASSED` });

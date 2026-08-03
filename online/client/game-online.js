@@ -60,7 +60,7 @@ function addOnlineUi() {
   warning.id = "turnWarning";
   warning.className = "turn-warning";
   warning.textContent = "10 SEC REMAIN";
-  document.body.appendChild(warning);
+  (matchMedia("(max-width:720px)").matches ? document.body : document.querySelector("#arena")).appendChild(warning);
 
   const mobileTimer = document.createElement("section");
   mobileTimer.id = "mobileTurnTimer";
