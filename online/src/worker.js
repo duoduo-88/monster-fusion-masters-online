@@ -4,6 +4,7 @@ const RADIUS = 4;
 const MAX_HAND = 5;
 const RECONNECT_GRACE_MS = 120_000;
 const GAME_INTRO_MS = 8_000;
+const PLACEMENT_SETTLE_MS = 1_250;
 const ACCESS_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 const ACCESS_ATTEMPT_LIMIT = 8;
 const ACCESS_ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
@@ -429,6 +430,8 @@ function startNextRound(game) {
   game.turnDeadline = null;
   game.startAt = Date.now() + GAME_INTRO_MS;
   game.result = null;
+  game.settleUntil = null;
+  game.pendingAdvance = false;
   game.roundWinnerAwarded = false;
   game.roundWinnerMemberId = null;
   for (const player of game.players) {
@@ -501,7 +504,8 @@ function createGame(members, twoCount = 8, turnSeconds = 0) {
     round: 1, turn: 0, current: players.length ? random[0] % players.length : 0, deck, deckTotal: deck.length, players,
     board: {}, scoreMarks: [], scored: [], logs: [], logSeq: 0,
     locked: true, phase: "starting", eventSeq: 0, lastEvent: null, twoCount,
-    turnSeconds, turnDeadline: null, startAt: Date.now() + GAME_INTRO_MS, result: null, roundWinnerAwarded: false, roundWinnerMemberId: null
+    turnSeconds, turnDeadline: null, startAt: Date.now() + GAME_INTRO_MS, result: null, roundWinnerAwarded: false, roundWinnerMemberId: null,
+    settleUntil: null, pendingAdvance: false
   };
   for (const player of players) drawTiles(game, player, 2);
   pushLog(game, { type: "round", text: "ROUND 1 START" });
@@ -598,7 +602,11 @@ function placeTilesAtomically(game, playerIndex, memberId, message) {
     points: batchPoints,
     placements
   };
-  if (!player.hand.length && !checkRoundEnd(next)) nextTurn(next);
+  const lastDelay = placements.reduce((maximum, placement) => Math.max(maximum, placement.delay || 0), 0);
+  const settleDuration = lastDelay + PLACEMENT_SETTLE_MS;
+  next.settleUntil = Date.now() + settleDuration;
+  next.pendingAdvance = !player.hand.length;
+  if (next.turnDeadline) next.turnDeadline += settleDuration;
   Object.assign(game, next);
   return { ok: true };
 }
@@ -625,6 +633,8 @@ function gameAction(game, memberId, message) {
     player.hand = ids.map(id => tiles.get(id));
     return { ok: true };
   }
+
+  if (game.settleUntil && game.settleUntil > Date.now()) return { error: "BOARD SETTLING" };
 
   if (playerIndex !== game.current) return { error: "NOT YOUR TURN" };
   if (player.resigned) return { error: "SURRENDERED" };
@@ -664,6 +674,7 @@ function publicGame(game, viewerId, role) {
     turnSeconds: game.turnSeconds,
     turnDeadline: game.turnDeadline,
     startAt: game.startAt || null,
+    settleUntil: game.settleUntil || null,
     players: game.players.map(player => ({
       memberId: player.memberId,
       nickname: player.nickname,
@@ -1095,6 +1106,7 @@ export class GameRoom {
     if (!this.room) return;
     const deadlines = [];
     if (this.room.phase === "game" && this.room.game?.phase === "starting" && this.room.game.startAt) deadlines.push(this.room.game.startAt);
+    if (this.room.phase === "game" && this.room.game?.settleUntil) deadlines.push(this.room.game.settleUntil);
     if (this.room.phase === "game" && this.room.game?.turnDeadline) deadlines.push(this.room.game.turnDeadline);
     for (const member of this.room.members) if (!member.connected && member.reconnectDeadline) deadlines.push(member.reconnectDeadline);
     if (deadlines.length) await this.ctx.storage.setAlarm(Math.max(Date.now() + 250, Math.min(...deadlines)));
@@ -1116,6 +1128,12 @@ export class GameRoom {
         memberId: game.players[game.current]?.memberId || null
       };
       beginTurn(game);
+    }
+    if (this.room.phase === "game" && game?.settleUntil && game.settleUntil <= now) {
+      game.settleUntil = null;
+      const advance = game.pendingAdvance;
+      game.pendingAdvance = false;
+      if (advance && !checkRoundEnd(game)) nextTurn(game);
     }
     if (this.room.phase === "game" && game?.turnDeadline && game.turnDeadline <= now && !game.locked) {
       const player = game.players[game.current];

@@ -13,6 +13,7 @@ let warnedTurn = -1;
 let shownResultId = "";
 let shownSurrenderSeq = 0;
 let resultAutoClose = null;
+let resultRevealTimer = null;
 let linkOnline = false;
 let introTimer = null;
 let shownIntroKey = "";
@@ -61,6 +62,12 @@ function addOnlineUi() {
   warning.className = "turn-warning";
   warning.textContent = "10 SEC REMAIN";
   (matchMedia("(max-width:720px)").matches ? document.body : document.querySelector("#arena")).appendChild(warning);
+
+  const finishGlow = document.createElement("div");
+  finishGlow.id = "roundFinishGlow";
+  finishGlow.className = "round-finish-glow";
+  finishGlow.setAttribute("aria-hidden", "true");
+  document.querySelector("#arena").appendChild(finishGlow);
 
   const mobileTimer = document.createElement("section");
   mobileTimer.id = "mobileTurnTimer";
@@ -247,9 +254,10 @@ function syncedNow() {
 
 function hideResult() {
   clearTimeout(resultAutoClose);
+  clearTimeout(resultRevealTimer);
   const result = document.querySelector("#onlineResult");
   if (result) result.hidden = true;
-  document.body.classList.remove("result-impact");
+  document.body.classList.remove("result-impact", "round-finish-pending");
 }
 
 function requestNextRound() {
@@ -295,6 +303,18 @@ function openResult(mode, details) {
   if (mode === "surrender") resultAutoClose = setTimeout(hideResult, 2800);
 }
 
+function queueResult(mode, details) {
+  clearTimeout(resultRevealTimer);
+  document.body.style.setProperty("--round-finish-color", details.color || "#c8a951");
+  document.body.classList.remove("round-finish-pending");
+  void document.body.offsetWidth;
+  document.body.classList.add("round-finish-pending");
+  resultRevealTimer = setTimeout(() => {
+    document.body.classList.remove("round-finish-pending");
+    openResult(mode, details);
+  }, 900);
+}
+
 function handleGameResult(game) {
   if (!game) return;
   if (game.result?.id && game.result.id !== shownResultId) {
@@ -314,7 +334,7 @@ function handleGameResult(game) {
       .map(player => `<span${player.memberId === game.result.winnerMemberId ? ' class="winner-score"' : ""}><b>${escapeResult(player.nickname)}</b><em>${final ? player.totalScore : `${player.roundScore} / ${player.totalScore}`}</em></span>`)
       .join("");
     if (surrenderResult && event.memberId === memberId) {
-      openResult("surrender", {
+      queueResult("surrender", {
         kicker: final ? "MATCH FORFEIT" : "ROUND FORFEIT",
         title: final ? "DEFEAT" : "YOU FORFEIT",
         winner: final ? `${game.result.winnerNickname} WINS` : `ROUND ${game.result.round} SURRENDERED`,
@@ -326,7 +346,7 @@ function handleGameResult(game) {
       });
       return;
     }
-    openResult(final ? "victory" : "round", {
+    queueResult(final ? "victory" : "round", {
       kicker: final ? "MATCH COMPLETE" : `ROUND ${game.result.round} COMPLETE`,
       title: final ? (selfWon ? "YOU WIN" : "VICTORY") : (selfWon ? "ROUND WIN" : "ROUND OVER"),
       winner: final ? `${game.result.winnerNickname} WINS` : `${game.result.winnerNickname} TAKES ROUND`,
