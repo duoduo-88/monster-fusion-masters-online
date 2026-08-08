@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#000000">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="MFM">
   <link rel="preload" href="../online/public/fonts/VT323-Regular.ttf" as="font" type="font/ttf" crossorigin>
   <title>Monster Fusion Masters · Competitive Rule</title>
   <link rel="stylesheet" href="../online/public/retro-scrollbar.css">
@@ -16,15 +19,17 @@
     }
     *{box-sizing:border-box}
     [hidden]{display:none!important}
-    html,body{margin:0;min-height:100%;background:#000;color:var(--ink);font-family:"MFM Pixel",monospace;font-style:normal;font-weight:400;font-synthesis:none;font-kerning:none}
+    html,body{margin:0;min-height:100%;background:#000;color:var(--ink);font-family:"MFM Pixel",monospace;font-style:normal;font-weight:400;font-synthesis:none;font-kerning:none;-webkit-text-size-adjust:100%;text-size-adjust:100%}
     body{overflow:hidden;background:#000;text-shadow:0 0 1.2px rgba(241,238,220,.2)}
+    body.ios-pseudo-fullscreen{position:fixed;inset:0;width:100%;height:100dvh;min-height:100dvh;overflow:hidden}
     body::before{content:"";position:fixed;inset:-2px;z-index:9997;pointer-events:none;background:repeating-linear-gradient(180deg,transparent 0 2.15px,rgba(0,0,0,.035) 2.15px 2.45px,rgba(0,0,0,.105) 2.45px 2.85px,rgba(0,0,0,.035) 2.85px 3.15px,transparent 3.15px 4px),repeating-linear-gradient(90deg,rgba(255,96,82,.018) 0 .45px,rgba(255,96,82,.006) .45px .7px,rgba(92,255,160,.014) .7px 1.15px,rgba(92,255,160,.004) 1.15px 1.4px,rgba(104,142,255,.018) 1.4px 1.85px,rgba(104,142,255,.004) 1.85px 2.1px);filter:blur(.28px);opacity:.82;animation:crt-scan-roll .7s linear infinite,crt-flicker .0833s steps(1,end) infinite;will-change:background-position,opacity}
     body::after{content:"";position:fixed;inset:0;z-index:9999;pointer-events:none;background:radial-gradient(ellipse at 27% -10%,rgba(255,255,255,.13),transparent 38%),linear-gradient(115deg,rgba(255,255,255,.052) 0 10%,transparent 19% 52%,rgba(255,255,255,.02) 59% 65%,transparent 73%),linear-gradient(180deg,rgba(255,255,255,.022),transparent 25%);box-shadow:inset 0 0 34px rgba(175,220,205,.025)}
     #crtNoise{position:fixed;inset:0;width:100%;height:100%;z-index:9998;pointer-events:none;opacity:.075;filter:blur(.35px);mix-blend-mode:soft-light}
     @keyframes crt-flicker{0%,100%{opacity:.82}33.333%{opacity:.79}66.666%{opacity:.805}}
     @keyframes crt-scan-roll{from{background-position:0 0,0 0,0 0}to{background-position:0 4px,0 0,0 0}}
     @media (prefers-reduced-motion:reduce){body::before,dialog::after{animation:none!important}.tile-card.played-ghost,.tile-card.dealt-in,.tile-card.shift-in,#passBtn.deal-pass-shift{animation-duration:1ms;animation-delay:0ms}}
-    button,input,select{font:inherit}
+    button,input,select,textarea,dialog{font-family:"MFM Pixel",monospace!important;font-style:normal;font-synthesis:none;-webkit-text-size-adjust:100%;text-size-adjust:100%}
+    button,input,select{font-size:inherit}
     button{border:0;color:var(--ink);background:none}
     button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #fff;outline-offset:3px}
     .pixel-box{border:3px solid var(--line);background:#000;box-shadow:5px 5px 0 #000,inset 0 0 0 2px #090909,0 0 2px rgba(220,235,220,.09)}
@@ -294,14 +299,20 @@
     function scheduledDraw(now){drawRaf=0;drawTimer=0;draw(now)}
     function scheduleDraw(){if(document.hidden)return;if(drawRaf||drawTimer)return;const now=performance.now(),active=smoothVisuals(now);if(active&&!state.lowPowerMode)drawRaf=requestAnimationFrame(scheduledDraw);else{const delay=active?33:persistentVisuals()?(state.lowPowerMode?120:80):250;drawTimer=setTimeout(()=>scheduledDraw(performance.now()),delay)}}
     function setLowPower(enabled){state.lowPowerMode=!!enabled;document.body.classList.toggle('low-power',state.lowPowerMode);$('#lowPowerMode').checked=state.lowPowerMode;try{localStorage.setItem('mfm:low-power',state.lowPowerMode?'1':'0')}catch{}visualActivity(220)}
-    const fullscreenActive=()=>!!(document.fullscreenElement||document.webkitFullscreenElement);
+    const pseudoFullscreenActive=()=>document.body.classList.contains('ios-pseudo-fullscreen');
+    const fullscreenActive=()=>!!(document.fullscreenElement||document.webkitFullscreenElement||pseudoFullscreenActive());
     function syncFullscreenButton(){if(!fullscreenActive()&&state.fullscreenMobileLock){state.fullscreenMobileLock=false;document.body.dataset.fullscreenMobile='false';syncMobileBoardLock();render()}for(const button of [$('#fullscreenBtn'),$('#mobileFullscreenBtn')])if(button)button.textContent=fullscreenActive()?'EXIT FULLSCREEN':'FULLSCREEN'}
-    async function toggleFullscreen(fromMobile=false){try{if(fullscreenActive()){const exit=document.exitFullscreen||document.webkitExitFullscreen;if(!exit)throw new Error('FULLSCREEN NOT SUPPORTED');await exit.call(document)}else{if(fromMobile){state.fullscreenMobileLock=true;document.body.dataset.fullscreenMobile='true'}const enter=document.documentElement.requestFullscreen||document.documentElement.webkitRequestFullscreen;if(!enter)throw new Error('FULLSCREEN NOT SUPPORTED');await enter.call(document.documentElement)}syncFullscreenButton();syncMobileBoardLock();render()}catch{if(!fullscreenActive()){state.fullscreenMobileLock=false;document.body.dataset.fullscreenMobile='false'}toast('FULLSCREEN NOT AVAILABLE',PLACE_BAD)}}
+    async function toggleFullscreen(fromMobile=false){try{if(fullscreenActive()){if(pseudoFullscreenActive())document.body.classList.remove('ios-pseudo-fullscreen');else{const exit=document.exitFullscreen||document.webkitExitFullscreen;if(!exit)throw new Error('FULLSCREEN NOT SUPPORTED');await exit.call(document)}}else{const preserveMobile=fromMobile||mobileHandMode();if(preserveMobile){state.fullscreenMobileLock=true;document.body.dataset.fullscreenMobile='true'}const enter=document.documentElement.requestFullscreen||document.documentElement.webkitRequestFullscreen;if(enter)await enter.call(document.documentElement);else if(preserveMobile||touchPhoneMode()){document.body.classList.add('ios-pseudo-fullscreen');window.scrollTo(0,0);if(!navigator.standalone)toast('ADD TO HOME SCREEN FOR TRUE FULLSCREEN','#c8a951')}else throw new Error('FULLSCREEN NOT SUPPORTED')}syncFullscreenButton();syncMobileBoardLock();syncMobileScreenWakeLock();render()}catch{if(!fullscreenActive()){state.fullscreenMobileLock=false;document.body.dataset.fullscreenMobile='false'}toast('FULLSCREEN NOT AVAILABLE',PLACE_BAD)}}
     const visibleHandPlayer=()=>state.onlineMode?state.players.find(player=>player.memberId===state.viewerId):state.players[state.current];
     const canLocalAct=()=>!state.onlineMode||state.viewerRole==='player'&&visibleHandPlayer()&&!state.locked&&!state.pendingPlacementIds.size&&Date.now()>=(state.settlingUntil||0)&&state.players[state.current]?.memberId===state.viewerId;
     const canLocalPass=()=>canLocalAct()&&Date.now()>=(state.settlingUntil||0);
     const canLocalPrepare=()=>!state.onlineMode||state.viewerRole==='player'&&visibleHandPlayer()&&!state.locked;
-    const mobileHandMode=()=>state.onlineMode&&(state.fullscreenMobileLock||matchMedia('(max-width:720px)').matches);
+    const touchPhoneMode=()=>navigator.maxTouchPoints>0&&Math.min(screen.width||innerWidth,screen.height||innerHeight)<=900;
+    const mobileHandMode=()=>state.onlineMode&&(state.fullscreenMobileLock||matchMedia('(max-width:720px)').matches||touchPhoneMode());
+    let mobileScreenWakeLock=null,mobileWakeLockRequesting=false;
+    async function requestMobileScreenWakeLock(){if(!mobileHandMode()||document.visibilityState!=='visible'||mobileScreenWakeLock||mobileWakeLockRequesting||!('wakeLock'in navigator))return;mobileWakeLockRequesting=true;try{const lock=await navigator.wakeLock.request('screen');mobileScreenWakeLock=lock;lock.addEventListener('release',()=>{if(mobileScreenWakeLock===lock)mobileScreenWakeLock=null})}catch{}finally{mobileWakeLockRequesting=false}}
+    async function releaseMobileScreenWakeLock(){const lock=mobileScreenWakeLock;mobileScreenWakeLock=null;if(lock&&!lock.released)try{await lock.release()}catch{}}
+    function syncMobileScreenWakeLock(){if(mobileHandMode())requestMobileScreenWakeLock();else releaseMobileScreenWakeLock()}
     const activeHandElement=()=>mobileHandMode()?$('#mobileHand'):$('#hand');
     const mobileBoardLocked=()=>mobileHandMode();
     const boardRotationLocked=()=>state.onlineMode&&(state.viewerRole!=='player'||mobileBoardLocked());
@@ -643,9 +654,9 @@
     const sideDrawer=$('#sidePanels'),sideDrawerTab=$('#sideDrawerTab');let sideCloseTimer=null;const setSideDrawer=open=>{sideDrawer.classList.toggle('drawer-open',open);sideDrawerTab.setAttribute('aria-expanded',String(open))};sideDrawerTab.onclick=()=>setSideDrawer(!sideDrawer.classList.contains('drawer-open'));sideDrawer.addEventListener('pointerenter',()=>{clearTimeout(sideCloseTimer);setSideDrawer(true)});sideDrawer.addEventListener('pointerleave',()=>{clearTimeout(sideCloseTimer);sideCloseTimer=setTimeout(()=>setSideDrawer(false),260)});document.addEventListener('pointerdown',event=>{if(state.logFocus&&!event.target.closest('#log li.inspectable'))clearLogFocus()});document.addEventListener('keydown',event=>{if(event.key==='Escape'){if(state.logFocus)clearLogFocus();if(state.coordPickerOpen)setCoordPicker(false)}});
     $('#playerCount').onchange=e=>{$$('.extra-name').forEach((el,i)=>el.hidden=i+3>+e.target.value)};$('#twoCount').oninput=e=>{$('#totalPreview').textContent=4*Math.max(8,Math.min(15,+e.target.value||8))+10};$('#setupForm').addEventListener('submit',e=>{e.preventDefault();startGame()});
     $('#nextRoundBtn').onclick=()=>{$('#gameoverDialog').close();if(state.round<3){state.round++;resetRound()}else{state.started=false;state.locked=false;$('#setupDialog').showModal();render()}};
-    window.addEventListener('keydown',e=>{if($$('dialog[open]').length||/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName))return;if(e.key.toLowerCase()==='q')rotateSelected(-1);if(e.key.toLowerCase()==='e')rotateSelected(1);if(e.code==='Space'){e.preventDefault();pass()}});window.addEventListener('resize',()=>{syncMobileBoardLock();resize();syncDesktopHandSize();const nextMobile=mobileHandMode();if(nextMobile!==state.responsiveMobile){state.responsiveMobile=nextMobile;state.stageDrag=null;requestAnimationFrame(render)}else if(mobileStageMode())requestAnimationFrame(()=>{ensureMobileStageLayout();updateMobileStageDom()})});window.addEventListener('resize',resizeNoise);new ResizeObserver(resize).observe($('#arena'));
-    document.addEventListener('visibilitychange',()=>{if(document.hidden){if(drawRaf)cancelAnimationFrame(drawRaf);if(drawTimer)clearTimeout(drawTimer);drawRaf=drawTimer=0}else{resizeNoise();visualActivity(300)}});
-    try{state.lowPowerMode=localStorage.getItem('mfm:low-power')==='1'}catch{}setLowPower(state.lowPowerMode);ctx.imageSmoothingEnabled=false;drawLogo();resize();resizeNoise();state.responsiveMobile=mobileHandMode();setInterval(drawNoise,100);render();scheduleDraw();if(new URLSearchParams(location.search).get('online')!=='1')$('#setupDialog').showModal();
+    window.addEventListener('keydown',e=>{if($$('dialog[open]').length||/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName))return;if(e.key.toLowerCase()==='q')rotateSelected(-1);if(e.key.toLowerCase()==='e')rotateSelected(1);if(e.code==='Space'){e.preventDefault();pass()}});window.addEventListener('pointerdown',requestMobileScreenWakeLock,{passive:true});window.addEventListener('resize',()=>{syncMobileBoardLock();syncMobileScreenWakeLock();resize();syncDesktopHandSize();const nextMobile=mobileHandMode();if(nextMobile!==state.responsiveMobile){state.responsiveMobile=nextMobile;state.stageDrag=null;requestAnimationFrame(render)}else if(mobileStageMode())requestAnimationFrame(()=>{ensureMobileStageLayout();updateMobileStageDom()})});window.addEventListener('resize',resizeNoise);new ResizeObserver(resize).observe($('#arena'));
+    document.addEventListener('visibilitychange',()=>{if(document.hidden){releaseMobileScreenWakeLock();if(drawRaf)cancelAnimationFrame(drawRaf);if(drawTimer)clearTimeout(drawTimer);drawRaf=drawTimer=0}else{requestMobileScreenWakeLock();resizeNoise();visualActivity(300)}});
+    try{state.lowPowerMode=localStorage.getItem('mfm:low-power')==='1'}catch{}setLowPower(state.lowPowerMode);ctx.imageSmoothingEnabled=false;drawLogo();resize();resizeNoise();state.responsiveMobile=mobileHandMode();syncMobileScreenWakeLock();setInterval(drawNoise,100);render();scheduleDraw();if(new URLSearchParams(location.search).get('online')!=='1')$('#setupDialog').showModal();
   })();
   </script>
 </body>

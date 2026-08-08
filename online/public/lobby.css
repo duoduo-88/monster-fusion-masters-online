@@ -3,13 +3,14 @@
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 .sr-only{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
-html,body{margin:0;min-height:100%;background:#000;color:var(--ink);font-family:"MFM Pixel",monospace;font-style:normal;font-weight:400;font-synthesis:none;font-kerning:none}
+html,body{margin:0;min-height:100%;background:#000;color:var(--ink);font-family:"MFM Pixel",monospace;font-style:normal;font-weight:400;font-synthesis:none;font-kerning:none;-webkit-text-size-adjust:100%;text-size-adjust:100%}
 body{overflow-x:hidden;text-shadow:0 0 1px rgba(241,238,220,.22)}
 body::before{content:"";position:fixed;inset:0;z-index:50;pointer-events:none;background:repeating-linear-gradient(180deg,transparent 0 3px,rgba(0,0,0,.13) 3px 4px),repeating-linear-gradient(90deg,rgba(255,90,80,.012) 0 1px,rgba(90,255,150,.009) 1px 2px,rgba(90,130,255,.012) 2px 3px);opacity:.72;animation:scan .7s linear infinite}
 body::after{content:"";position:fixed;inset:0;z-index:51;pointer-events:none;background:radial-gradient(ellipse at 24% -5%,rgba(255,255,255,.11),transparent 38%),linear-gradient(112deg,rgba(255,255,255,.04),transparent 22% 70%,rgba(255,255,255,.018))}
 #noise{position:fixed;inset:0;width:100%;height:100%;z-index:49;pointer-events:none;opacity:.08;mix-blend-mode:screen}
 @keyframes scan{to{background-position:0 4px,0 0}}
-button,input,select{font:inherit}
+button,input,select,textarea,dialog{font-family:"MFM Pixel",monospace!important;font-style:normal;font-synthesis:none;-webkit-text-size-adjust:100%;text-size-adjust:100%}
+button,input,select{font-size:inherit}
 button{color:inherit}
 .pixel-box{border:3px solid var(--line);background:#000;box-shadow:5px 5px 0 #111,inset 0 0 0 2px #090909}
 .shell{width:min(1120px,calc(100% - 24px));min-height:100dvh;margin:auto;padding:12px;display:grid;grid-template-rows:auto minmax(0,1fr);gap:12px}
