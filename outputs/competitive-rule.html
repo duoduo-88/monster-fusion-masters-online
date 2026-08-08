@@ -307,7 +307,7 @@
     const canLocalAct=()=>!state.onlineMode||state.viewerRole==='player'&&visibleHandPlayer()&&!state.locked&&!state.pendingPlacementIds.size&&Date.now()>=(state.settlingUntil||0)&&state.players[state.current]?.memberId===state.viewerId;
     const canLocalPass=()=>canLocalAct()&&Date.now()>=(state.settlingUntil||0);
     const canLocalPrepare=()=>!state.onlineMode||state.viewerRole==='player'&&visibleHandPlayer()&&!state.locked;
-    const touchPhoneMode=()=>navigator.maxTouchPoints>0&&Math.min(screen.width||innerWidth,screen.height||innerHeight)<=900;
+    const touchPhoneMode=()=>navigator.maxTouchPoints>0&&matchMedia('(pointer:coarse)').matches&&Math.min(innerWidth,innerHeight)<=600;
     const mobileHandMode=()=>state.onlineMode&&(state.fullscreenMobileLock||matchMedia('(max-width:720px)').matches||touchPhoneMode());
     let mobileScreenWakeLock=null,mobileWakeLockRequesting=false;
     async function requestMobileScreenWakeLock(){if(!mobileHandMode()||document.visibilityState!=='visible'||mobileScreenWakeLock||mobileWakeLockRequesting||!('wakeLock'in navigator))return;mobileWakeLockRequesting=true;try{const lock=await navigator.wakeLock.request('screen');mobileScreenWakeLock=lock;lock.addEventListener('release',()=>{if(mobileScreenWakeLock===lock)mobileScreenWakeLock=null})}catch{}finally{mobileWakeLockRequesting=false}}
