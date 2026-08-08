@@ -357,10 +357,11 @@ function beginTurn(game) {
   const player = game.players[game.current];
   player.playedThisTurn = false;
   const drawn = drawTiles(game, player, 2);
+  const drawnIds = drawn ? player.hand.slice(-drawn).map(tile => tile.id) : [];
   game.turnActiveAt = Date.now() + (drawn ? TURN_DEAL_MS : 250);
   game.turnDeadline = game.turnSeconds ? game.turnActiveAt + game.turnSeconds * 1000 : null;
   pushLog(game, { type: "turn", memberId: player.memberId, text: `${player.nickname} TURN${drawn ? ` · DRAW ${drawn}` : ""}` });
-  game.lastEvent = { seq: ++game.eventSeq, type: "turn", at: Date.now(), memberId: player.memberId, drawn };
+  game.lastEvent = { seq: ++game.eventSeq, type: "turn", at: Date.now(), memberId: player.memberId, drawn, drawnIds };
 }
 
 function nextTurn(game) {
@@ -721,6 +722,12 @@ function gameAction(game, memberId, message) {
 
 function publicGame(game, viewerId, role) {
   if (!game) return null;
+  const lastEvent = game.lastEvent
+    ? {
+        ...game.lastEvent,
+        drawnIds: game.lastEvent.memberId === viewerId ? game.lastEvent.drawnIds : undefined
+      }
+    : null;
   return {
     round: game.round,
     turn: game.turn,
@@ -733,7 +740,7 @@ function publicGame(game, viewerId, role) {
     locked: game.locked,
     phase: game.phase,
     result: game.result,
-    lastEvent: game.lastEvent,
+    lastEvent,
     turnSeconds: game.turnSeconds,
     turnDeadline: game.turnDeadline,
     turnActiveAt: game.turnActiveAt || null,
