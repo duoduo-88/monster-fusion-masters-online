@@ -63,7 +63,7 @@ function drawLobbyLogo() {
   const mobileOnlineLabel = document.createElement("span");
   mobileOnlineLabel.className = "mobile-online-link";
   mobileOnlineLabel.textContent = "ONLINE LINK";
-  logo.lastElementChild?.appendChild(mobileOnlineLabel);
+  logo.appendChild(mobileOnlineLabel);
 }
 
 function setScreen(name) {
