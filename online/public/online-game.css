@@ -79,12 +79,11 @@ body[data-online="true"] #passBtn:not(:disabled),
 body[data-online="true"] #mobilePassBtn:not(:disabled){color:#f1c079;border-color:#b86f43;background:#1a0d08;box-shadow:3px 3px 0 #422318,0 0 7px rgba(223,160,107,.22)}
 body[data-online="true"] .side-drawer-tab{font:inherit}
 body:not([data-online="true"]) .pre-toggle{visibility:hidden}
-.stage-played-ghost{position:fixed;z-index:10010;margin:0;padding:0;pointer-events:none;transform-origin:center;animation:mfm-stage-out .46s cubic-bezier(.45,0,.75,.35) both}
+.stage-played-ghost{position:fixed;z-index:10010;margin:0;padding:0;pointer-events:none;transform-origin:center;animation:tile-play-out .28s cubic-bezier(.4,0,.7,1) both;will-change:transform,opacity}
 .stage-played-ghost canvas{display:block;width:100%;height:100%}
 .tile-card.stage-committed{opacity:.42;filter:grayscale(.72) brightness(.68)!important;pointer-events:none}
 .tile-card.preview-staged{border-color:#c8a951;box-shadow:inset 0 0 0 2px #4a421f,3px 3px #242424}
 .tile-card.preview-staged::after{content:"PRE";position:absolute;z-index:4;right:3px;top:3px;padding:3px 4px;border:1px solid #c8a951;background:#000;color:#f2db76;font-size:9pt;line-height:1;letter-spacing:.06em;pointer-events:none}
-@keyframes mfm-stage-out{0%{opacity:1;transform:scale(1)}18%{opacity:1;transform:scale(1.07)}100%{opacity:0;transform:scale(.04)}}
 
 @media(min-width:721px){
   body[data-online="true"] .mobile-hand-wrap,
