@@ -5,9 +5,23 @@ const MAX_HAND = 5;
 const RECONNECT_GRACE_MS = 120_000;
 const GAME_INTRO_MS = 8_000;
 const PLACEMENT_SETTLE_MS = 1_250;
+const TURN_TRANSITION_MS = 2_000;
+const TURN_DEAL_MS = 900;
+const FINISHED_ROOM_TTL_MS = 30 * 60 * 1000;
 const ACCESS_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 const ACCESS_ATTEMPT_LIMIT = 8;
 const ACCESS_ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
+const PLAYER_COLORS = ["#6cbebc", "#d3655d", "#c8a951", "#8c78c4", "#72aa83", "#d8894b", "#cf6f9d", "#4f87c5", "#a8bd55"];
+
+function normalizePlayerColor(value) {
+  const color = String(value || "").toLowerCase();
+  return PLAYER_COLORS.includes(color) ? color : "";
+}
+
+function availablePlayerColor(members, excludeId = "") {
+  const used = new Set(members.filter(member => member.id !== excludeId && member.role === "player").map(member => normalizePlayerColor(member.color)).filter(Boolean));
+  return PLAYER_COLORS.find(color => !used.has(color)) || PLAYER_COLORS[0];
+}
 
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), {
   status,
@@ -341,9 +355,12 @@ function beginTurn(game) {
   while (game.players[game.current]?.resigned && guard++ < game.players.length) game.current = (game.current + 1) % game.players.length;
   game.turn++;
   const player = game.players[game.current];
+  player.playedThisTurn = false;
   const drawn = drawTiles(game, player, 2);
-  game.turnDeadline = game.turnSeconds ? Date.now() + game.turnSeconds * 1000 : null;
+  game.turnActiveAt = Date.now() + (drawn ? TURN_DEAL_MS : 250);
+  game.turnDeadline = game.turnSeconds ? game.turnActiveAt + game.turnSeconds * 1000 : null;
   pushLog(game, { type: "turn", memberId: player.memberId, text: `${player.nickname} TURN${drawn ? ` · DRAW ${drawn}` : ""}` });
+  game.lastEvent = { seq: ++game.eventSeq, type: "turn", at: Date.now(), memberId: player.memberId, drawn };
 }
 
 function nextTurn(game) {
@@ -355,6 +372,40 @@ function nextTurn(game) {
   }
   game.current = next;
   beginTurn(game);
+}
+
+function scheduleTurnTransition(game, type, player, auto = false) {
+  const now = Date.now();
+  game.turnDeadline = null;
+  game.turnActiveAt = null;
+  game.transitionUntil = now + TURN_TRANSITION_MS;
+  game.pendingTurnAdvance = true;
+  game.lastEvent = {
+    seq: ++game.eventSeq,
+    type,
+    auto,
+    at: now,
+    memberId: player.memberId,
+    passCount: player.consecutivePasses || 0
+  };
+}
+
+function finishCurrentTurn(game, auto = false) {
+  const player = game.players[game.current];
+  if (!player || player.resigned) return { error: "PLAYER NOT AVAILABLE" };
+  if (player.playedThisTurn) {
+    pushLog(game, { type: "end", memberId: player.memberId, text: `${player.nickname} ENDED TURN${auto ? " · AUTO" : ""}` });
+    scheduleTurnTransition(game, "end", player, auto);
+    return { ok: true, type: "end" };
+  }
+  if ((player.consecutivePasses || 0) >= 3) {
+    pushLog(game, { type: "pass-defeat", memberId: player.memberId, text: `${player.nickname} PASS LIMIT · DEFEATED` });
+    return surrenderGamePlayer(game, player.memberId, "PASS LIMIT · DEFEATED", true);
+  }
+  player.consecutivePasses = (player.consecutivePasses || 0) + 1;
+  pushLog(game, { type: "pass", memberId: player.memberId, text: `${player.nickname} ${auto ? "TIME OUT · AUTO PASS" : "PASSED"} · ${player.consecutivePasses}/3` });
+  scheduleTurnTransition(game, "pass", player, auto);
+  return { ok: true, type: "pass" };
 }
 
 function awardRoundWin(game, winner = null) {
@@ -374,6 +425,9 @@ function finishGame(game, reason, winner = null, awardCurrentRound = true) {
   game.locked = true;
   game.phase = "game-over";
   game.turnDeadline = null;
+  game.turnActiveAt = null;
+  game.transitionUntil = null;
+  game.pendingTurnAdvance = false;
   game.startAt = null;
   game.result = {
     id: `${game.round}:${game.turn}:${Date.now()}`,
@@ -397,6 +451,9 @@ function finishRound(game, reason, winner = null) {
   game.locked = true;
   game.phase = "round-over";
   game.turnDeadline = null;
+  game.turnActiveAt = null;
+  game.transitionUntil = null;
+  game.pendingTurnAdvance = false;
   game.startAt = null;
   game.result = {
     id: `${game.round}:${game.turn}:${Date.now()}`,
@@ -428,6 +485,9 @@ function startNextRound(game) {
   game.locked = true;
   game.phase = "starting";
   game.turnDeadline = null;
+  game.turnActiveAt = null;
+  game.transitionUntil = null;
+  game.pendingTurnAdvance = false;
   game.startAt = Date.now() + GAME_INTRO_MS;
   game.result = null;
   game.settleUntil = null;
@@ -437,6 +497,8 @@ function startNextRound(game) {
   for (const player of game.players) {
     player.hand = [];
     player.roundScore = 0;
+    player.consecutivePasses = 0;
+    player.playedThisTurn = false;
     player.resigned = Boolean(player.withdrawn);
     if (!player.resigned) drawTiles(game, player, 2);
   }
@@ -497,14 +559,15 @@ function createGame(members, twoCount = 8, turnSeconds = 0) {
   const players = members
     .filter(member => member.role === "player")
     .sort((a, b) => a.joinedAt - b.joinedAt)
-    .map(member => ({ memberId: member.id, nickname: member.nickname, hand: [], roundScore: 0, totalScore: 0, roundWins: 0, resigned: false, withdrawn: false }));
+    .map((member, index) => ({ memberId: member.id, nickname: member.nickname, color: normalizePlayerColor(member.color) || PLAYER_COLORS[index % PLAYER_COLORS.length], hand: [], roundScore: 0, totalScore: 0, roundWins: 0, consecutivePasses: 0, playedThisTurn: false, resigned: false, withdrawn: false }));
   const random = new Uint32Array(1);
   crypto.getRandomValues(random);
   const game = {
     round: 1, turn: 0, current: players.length ? random[0] % players.length : 0, deck, deckTotal: deck.length, players,
     board: {}, scoreMarks: [], scored: [], logs: [], logSeq: 0,
     locked: true, phase: "starting", eventSeq: 0, lastEvent: null, twoCount,
-    turnSeconds, turnDeadline: null, startAt: Date.now() + GAME_INTRO_MS, result: null, roundWinnerAwarded: false, roundWinnerMemberId: null,
+    turnSeconds, turnDeadline: null, turnActiveAt: null, transitionUntil: null, pendingTurnAdvance: false,
+    startAt: Date.now() + GAME_INTRO_MS, result: null, roundWinnerAwarded: false, roundWinnerMemberId: null,
     settleUntil: null, pendingAdvance: false
   };
   for (const player of players) drawTiles(game, player, 2);
@@ -516,7 +579,8 @@ function normalizedPlacementSpecs(message) {
   const source = message.action === "placeBatch" ? message.placements : [{
     tileId: message.tileId,
     coord: message.coord,
-    boardStep: message.boardStep
+    boardStep: message.boardStep,
+    rotation: message.rotation
   }];
   if (!Array.isArray(source) || !source.length || source.length > MAX_HAND) return null;
   const seenTiles = new Set();
@@ -526,12 +590,13 @@ function normalizedPlacementSpecs(message) {
     const tileId = Number(raw?.tileId);
     const cell = coordCell(raw?.coord);
     const boardStep = Math.max(0, Math.min(5, Math.trunc(Number(raw?.boardStep) || 0)));
+    const rotation = Math.max(0, Math.min(5, Math.trunc(Number(raw?.rotation) || 0)));
     if (!Number.isInteger(tileId) || !cell) return null;
     const key = K(cell.q, cell.r);
     if (seenTiles.has(tileId) || seenCells.has(key)) return null;
     seenTiles.add(tileId);
     seenCells.add(key);
-    specs.push({ tileId, cell, key, boardStep });
+    specs.push({ tileId, cell, key, boardStep, rotation });
   }
   return specs;
 }
@@ -553,10 +618,12 @@ function placeTilesAtomically(game, playerIndex, memberId, message) {
     const tileIndex = player.hand.findIndex(tile => tile.id === spec.tileId);
     if (tileIndex < 0) return { error: "TILE NOT FOUND" };
     const tile = player.hand[tileIndex];
-    const edges = rotate(tile.edges, (tile.handRotation || 0) - spec.boardStep);
+    const edges = rotate(tile.edges, spec.rotation - spec.boardStep);
     if (!canPlace(next, spec.cell.q, spec.cell.r, edges)) return { error: "NO MATCH" };
 
     player.hand.splice(tileIndex, 1);
+    player.playedThisTurn = true;
+    player.consecutivePasses = 0;
     const placed = { ...tile, edges, q: spec.cell.q, r: spec.cell.r, owner: playerIndex };
     next.board[spec.key] = placed;
     const scored = scorePlacement(next, spec.key);
@@ -606,7 +673,6 @@ function placeTilesAtomically(game, playerIndex, memberId, message) {
   const settleDuration = lastDelay + PLACEMENT_SETTLE_MS;
   next.settleUntil = Date.now() + settleDuration;
   next.pendingAdvance = !player.hand.length;
-  if (next.turnDeadline) next.turnDeadline += settleDuration;
   Object.assign(game, next);
   return { ok: true };
 }
@@ -636,17 +702,14 @@ function gameAction(game, memberId, message) {
 
   if (playerIndex !== game.current) return { error: "NOT YOUR TURN" };
   if (player.resigned) return { error: "SURRENDERED" };
+  if (game.transitionUntil && game.transitionUntil > Date.now()) return { error: "TURN CHANGING" };
 
   if (action === "place" || action === "placeBatch") return placeTilesAtomically(game, playerIndex, memberId, message);
 
   if (game.settleUntil && game.settleUntil > Date.now()) return { error: "BOARD SETTLING" };
 
   if (action === "pass") {
-    pushLog(game, { type: "pass", memberId, text: `${player.nickname} PASSED` });
-    game.lastEvent = { seq: ++game.eventSeq, type: "pass", at: Date.now() + 80, memberId };
-    nextTurn(game);
-    checkRoundEnd(game);
-    return { ok: true };
+    return finishCurrentTurn(game, false);
   }
 
   if (action === "surrender") {
@@ -673,16 +736,21 @@ function publicGame(game, viewerId, role) {
     lastEvent: game.lastEvent,
     turnSeconds: game.turnSeconds,
     turnDeadline: game.turnDeadline,
+    turnActiveAt: game.turnActiveAt || null,
+    transitionUntil: game.transitionUntil || null,
     startAt: game.startAt || null,
     settleUntil: game.settleUntil || null,
     players: game.players.map(player => ({
       memberId: player.memberId,
       nickname: player.nickname,
+      color: player.color,
       handCount: player.hand.length,
       hand: role === "player" && player.memberId === viewerId ? player.hand : undefined,
       roundScore: player.roundScore,
       totalScore: player.totalScore,
       roundWins: player.roundWins || 0,
+      consecutivePasses: player.consecutivePasses || 0,
+      playedThisTurn: Boolean(player.playedThisTurn),
       resigned: player.resigned
     }))
   };
@@ -705,6 +773,25 @@ export default {
         const rate = await recordInviteAttempt(env, request, valid);
         if (!valid) response = errorJson(rate.allowed ? "INVALID CALLSIGN OR TEST CODE" : "TOO MANY ATTEMPTS · TRY LATER", rate.allowed ? 401 : 429);
         else response = json({ ok: true, ...(await issueAccessToken(env, nickname)) }, 200, { "cache-control": "no-store" });
+      }
+    }
+    else if (url.pathname === "/api/access/resume" && request.method === "POST") {
+      if (!env.TEST_TOKEN_SECRET) response = errorJson("TEST ACCESS NOT CONFIGURED", 503);
+      else {
+        const body = await bodyJson(request);
+        const nickname = String(body.nickname || "").trim().toUpperCase();
+        const code = String(body.code || "").trim().toUpperCase();
+        const roomToken = String(body.roomToken || "");
+        if (!nicknameOk(nickname) || !roomCodeOk(code) || !roomToken) response = errorJson("ROOM RESUME NOT AVAILABLE", 401);
+        else {
+          const stub = env.ROOMS.get(env.ROOMS.idFromName(code));
+          const resumed = await stub.fetch("https://room/resume", { method:"POST", body:JSON.stringify({ nickname, token:roomToken }) });
+          if (!resumed.ok) response = errorJson("ROOM RESUME EXPIRED", 401);
+          else {
+            const member = await resumed.json();
+            response = json({ ok:true, ...(await issueAccessToken(env, nickname)), room:{ code, memberId:member.memberId, role:member.role } }, 200, { "cache-control":"no-store" });
+          }
+        }
       }
     }
     else if (url.pathname === "/api/access" && request.method === "GET") {
@@ -842,6 +929,7 @@ export class GameRoom {
   }
 
   memberView(member) {
+    const playerIndex = this.room.members.filter(item => item.role === "player").findIndex(item => item.id === member.id);
     return {
       id: member.id,
       nickname: member.nickname,
@@ -850,7 +938,8 @@ export class GameRoom {
       connected: member.connected,
       reconnectUntil: !member.connected ? member.reconnectDeadline || null : null,
       isHost: member.id === this.room.hostId,
-      joinedAt: member.joinedAt
+      joinedAt: member.joinedAt,
+      color: normalizePlayerColor(member.color) || (playerIndex >= 0 ? PLAYER_COLORS[playerIndex % PLAYER_COLORS.length] : null)
     };
   }
 
@@ -874,6 +963,7 @@ export class GameRoom {
     const url = new URL(request.url);
     if (url.pathname === "/create" && request.method === "POST") return this.create(request);
     if (url.pathname === "/join" && request.method === "POST") return this.join(request);
+    if (url.pathname === "/resume" && request.method === "POST") return this.resume(request);
     if (url.pathname === "/info") return this.info();
     if (url.pathname === "/socket") return this.socket(request);
     return errorJson("NOT FOUND", 404);
@@ -888,7 +978,7 @@ export class GameRoom {
     const token = randomToken();
     const member = {
       id: crypto.randomUUID(), nickname: body.nickname.toUpperCase(), role: "player", ready: false,
-      connected: false, joinedAt: Date.now(), disconnectedAt: Date.now(), reconnectDeadline: null, tokenHash: await digest(token)
+      connected: false, joinedAt: Date.now(), disconnectedAt: Date.now(), reconnectDeadline: null, tokenHash: await digest(token), color: PLAYER_COLORS[0]
     };
     this.room = {
       code: body.code, phase: "lobby", hostId: member.id,
@@ -916,7 +1006,7 @@ export class GameRoom {
     const token = randomToken();
     const member = {
       id: crypto.randomUUID(), nickname, role, ready: false,
-      connected: false, joinedAt: Date.now(), disconnectedAt: Date.now(), reconnectDeadline: null, tokenHash: await digest(token)
+      connected: false, joinedAt: Date.now(), disconnectedAt: Date.now(), reconnectDeadline: null, tokenHash: await digest(token), color: role === "player" ? availablePlayerColor(this.room.members) : null
     };
     this.room.members.push(member);
     this.syncReconnectDeadlines();
@@ -924,6 +1014,17 @@ export class GameRoom {
     await this.scheduleAlarm();
     await this.broadcast();
     return json({ ok: true, code: this.room.code, token, memberId: member.id, role });
+  }
+
+  async resume(request) {
+    if (!this.room) return errorJson("ROOM NOT FOUND", 404);
+    const body = await bodyJson(request);
+    if (!nicknameOk(body.nickname) || !body.token) return errorJson("BAD RESUME", 401);
+    const tokenHash = await digest(body.token);
+    const nickname = String(body.nickname).toUpperCase();
+    const member = this.room.members.find(item => item.tokenHash === tokenHash && item.nickname === nickname);
+    if (!member) return errorJson("ROOM SESSION EXPIRED", 401);
+    return json({ ok:true, memberId:member.id, role:member.role });
   }
 
   async info() {
@@ -955,7 +1056,9 @@ export class GameRoom {
     member.connected = true;
     member.disconnectedAt = null;
     member.reconnectDeadline = null;
+    this.syncReconnectDeadlines();
     await this.save();
+    await this.scheduleAlarm();
     queueMicrotask(() => this.broadcast());
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -988,8 +1091,7 @@ export class GameRoom {
     if (member.connected || !member.disconnectedAt) return false;
     const game = this.room.game;
     if (this.room.phase !== "game" || member.role !== "player" || !game) return true;
-    if (game.phase === "starting") return false;
-    if (game.locked) return true;
+    if (game.phase === "starting" || game.locked || (game.transitionUntil && game.transitionUntil > Date.now())) return false;
     const current = game.players[game.current];
     return current?.memberId === member.id && !current.resigned;
   }
@@ -999,7 +1101,10 @@ export class GameRoom {
     for (const member of this.room.members) {
       const shouldRun = this.reconnectTimerShouldRun(member);
       if (shouldRun && !member.reconnectDeadline) {
-        member.reconnectDeadline = now + RECONNECT_GRACE_MS;
+        const game = this.room.game;
+        member.reconnectDeadline = this.room.phase === "game" && game?.turnSeconds
+          ? Math.max(now, Number(game.turnDeadline) || now)
+          : now + RECONNECT_GRACE_MS;
         changed = true;
       } else if (!shouldRun && member.reconnectDeadline) {
         member.reconnectDeadline = null;
@@ -1026,14 +1131,21 @@ export class GameRoom {
     const host = member.id === this.room.hostId;
     let error = "";
     if (message.type === "ready") {
-      if (this.room.phase !== "lobby" || member.role !== "player") error = "READY NOT AVAILABLE";
+      if (member.id === this.room.hostId) error = "HOST USE START";
+      else if (this.room.phase !== "lobby" || member.role !== "player") error = "READY NOT AVAILABLE";
       else member.ready = !member.ready;
+    } else if (message.type === "turnTimer") {
+      const turnSeconds = Number(message.turnSeconds);
+      if (!host) error = "HOST ONLY";
+      else if (this.room.phase !== "lobby") error = "TIMER LOCKED";
+      else if (!Number.isInteger(turnSeconds) || turnSeconds !== 0 && (turnSeconds < 10 || turnSeconds > 600)) error = "TURN TIMER MUST BE 0 OR 10-600 SEC";
+      else this.room.turnSeconds = turnSeconds;
     } else if (message.type === "start") {
       const players = this.room.members.filter(item => item.role === "player");
       if (!host) error = "HOST ONLY";
       else if (this.room.phase !== "lobby") error = "ALREADY STARTED";
       else if (players.length < 2) error = "NEED 2 PLAYERS";
-      else if (!players.every(player => player.ready)) error = "ALL PLAYERS MUST READY";
+      else if (!players.filter(player => player.id !== this.room.hostId).every(player => player.ready)) error = "ALL GUEST PLAYERS MUST READY";
       else {
         this.room.game = createGame(this.room.members, Math.max(8, Math.min(15, Number(message.twoCount) || 8)), this.room.turnSeconds || 0);
         this.room.phase = "game";
@@ -1045,7 +1157,14 @@ export class GameRoom {
       else if (!host && target?.id !== member.id) error = "HOST ONLY";
       else if (!target) error = "PLAYER NOT FOUND";
       else if (nextRole === "player" && this.room.members.filter(item => item.role === "player").length >= 4) error = "PLAYER SLOTS FULL";
-      else { target.role = nextRole; target.ready = false; }
+      else { target.role = nextRole; target.ready = false; if (nextRole === "player") target.color = availablePlayerColor(this.room.members, target.id); }
+    } else if (message.type === "color") {
+      const color = normalizePlayerColor(message.color);
+      const inUse = this.room.members.some(item => item.id !== member.id && item.role === "player" && normalizePlayerColor(item.color) === color);
+      if (this.room.phase !== "lobby" || member.role !== "player") error = "COLOR LOCKED";
+      else if (!color) error = "BAD COLOR";
+      else if (inUse) error = "COLOR IN USE";
+      else member.color = color;
     } else if (message.type === "kick") {
       if (!host) error = "HOST ONLY";
       else if (message.memberId === member.id) error = "USE LEAVE";
@@ -1107,7 +1226,9 @@ export class GameRoom {
     const deadlines = [];
     if (this.room.phase === "game" && this.room.game?.phase === "starting" && this.room.game.startAt) deadlines.push(this.room.game.startAt);
     if (this.room.phase === "game" && this.room.game?.settleUntil) deadlines.push(this.room.game.settleUntil);
+    if (this.room.phase === "game" && this.room.game?.transitionUntil) deadlines.push(this.room.game.transitionUntil);
     if (this.room.phase === "game" && this.room.game?.turnDeadline) deadlines.push(this.room.game.turnDeadline);
+    if (this.room.phase === "game" && this.room.game?.phase === "game-over" && this.room.game.result?.at) deadlines.push(this.room.game.result.at + FINISHED_ROOM_TTL_MS);
     for (const member of this.room.members) if (!member.connected && member.reconnectDeadline) deadlines.push(member.reconnectDeadline);
     if (deadlines.length) await this.ctx.storage.setAlarm(Math.max(Date.now() + 250, Math.min(...deadlines)));
   }
@@ -1117,6 +1238,15 @@ export class GameRoom {
     if (!this.room) return;
     const now = Date.now();
     const game = this.room.game;
+    if (this.room.phase === "game" && game?.phase === "game-over" && game.result?.at && game.result.at + FINISHED_ROOM_TTL_MS <= now) {
+      const code = this.room.code;
+      for (const ws of this.ctx.getWebSockets()) { try { ws.close(1000, "ROOM EXPIRED"); } catch {} }
+      await this.ctx.storage.deleteAll();
+      this.room = null;
+      const directory = this.env.DIRECTORY.get(this.env.DIRECTORY.idFromName("MFM_ROOM_DIRECTORY_V1"));
+      await directory.fetch("https://directory/remove", { method: "POST", body: JSON.stringify({ codes: [code] }) });
+      return;
+    }
     if (this.room.phase === "game" && game?.phase === "starting" && game.startAt && game.startAt <= now) {
       game.startAt = null;
       game.phase = "playing";
@@ -1133,14 +1263,19 @@ export class GameRoom {
       game.settleUntil = null;
       const advance = game.pendingAdvance;
       game.pendingAdvance = false;
+      if (advance && !checkRoundEnd(game)) finishCurrentTurn(game, false);
+    }
+    if (this.room.phase === "game" && game?.transitionUntil && game.transitionUntil <= now) {
+      game.transitionUntil = null;
+      const advance = game.pendingTurnAdvance;
+      game.pendingTurnAdvance = false;
       if (advance && !checkRoundEnd(game)) nextTurn(game);
     }
     if (this.room.phase === "game" && game?.turnDeadline && game.turnDeadline <= now && !game.locked) {
       const player = game.players[game.current];
-      pushLog(game, { type: "pass", memberId: player.memberId, text: `${player.nickname} TIME OUT · AUTO PASS` });
-      game.lastEvent = { seq: ++game.eventSeq, type: "pass", auto: true, at: now, memberId: player.memberId };
-      nextTurn(game);
-      checkRoundEnd(game);
+      const member = this.room.members.find(item => item.id === player?.memberId);
+      if (member?.connected === false) game.turnDeadline = null;
+      else finishCurrentTurn(game, true);
     }
     this.syncReconnectDeadlines(now);
     const expired = this.room.members.filter(member => !member.connected && member.reconnectDeadline && member.reconnectDeadline <= now);

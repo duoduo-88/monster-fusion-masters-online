@@ -10,8 +10,10 @@ const LOGO_FONT = {
   A:["00100","01100","01010","11110","10001"]
 };
 const LOGO_PHASE = { S:-1, T:-1 };
+const PLAYER_COLORS = ["#6cbebc", "#d3655d", "#c8a951", "#8c78c4", "#72aa83", "#d8894b", "#cf6f9d", "#4f87c5", "#a8bd55"];
 const apiBase = String(window.MFM_CONFIG?.apiBase || "").replace(/\/$/, "") || location.origin;
 const store = sessionStorage;
+const recoveryStore = localStorage;
 const state = {
   nickname: store.getItem("mfm:nickname") || "",
   accessToken: store.getItem("mfm:test-access") || "",
@@ -28,7 +30,7 @@ const state = {
 function drawLobbyLogo() {
   const logo = $("#lobbyLogo");
   if (!logo) return;
-  const stepX = 5.8, stepY = 5.15, tileW = 5.2;
+  const stepX = 7.19, stepY = 6.36, tileW = 6.19;
   logo.replaceChildren();
   for (const word of ["MONSTER", "FUSION", "MASTERS"]) {
     const row = document.createElement("span");
@@ -58,6 +60,10 @@ function drawLobbyLogo() {
     }
     logo.appendChild(row);
   }
+  const mobileOnlineLabel = document.createElement("span");
+  mobileOnlineLabel.className = "mobile-online-link";
+  mobileOnlineLabel.textContent = "ONLINE LINK";
+  logo.lastElementChild?.appendChild(mobileOnlineLabel);
 }
 
 function setScreen(name) {
@@ -118,10 +124,22 @@ function saveSession(data) {
   state.token = data.token;
   state.memberId = data.memberId;
   store.setItem(`mfm:room:${data.code}`, JSON.stringify({ token: data.token, memberId: data.memberId, role: data.role }));
+  try { recoveryStore.setItem(`mfm:resume:${data.code}`, JSON.stringify({ token:data.token, memberId:data.memberId, role:data.role, nickname:state.nickname, savedAt:Date.now() })); } catch {}
+}
+
+function readRecovery(code, nickname = state.nickname) {
+  try {
+    const saved = JSON.parse(recoveryStore.getItem(`mfm:resume:${code}`) || "null");
+    return saved?.token && saved?.memberId && saved.nickname === nickname ? saved : null;
+  } catch { return null; }
+}
+
+function clearRecovery(code) {
+  try { if (code) recoveryStore.removeItem(`mfm:resume:${code}`); } catch {}
 }
 
 function clearRoomSession() {
-  if (state.code) store.removeItem(`mfm:room:${state.code}`);
+  if (state.code) { store.removeItem(`mfm:room:${state.code}`); clearRecovery(state.code); }
   state.room = null;
   state.code = "";
   state.token = "";
@@ -261,6 +279,7 @@ async function drawQr() {
 function memberItem(member, self, host) {
   const li = document.createElement("li");
   li.className = `member${member.id === self.id ? " self" : ""}${member.ready ? " ready" : ""}`;
+  if (member.color) li.style.setProperty("--member-color", member.color);
   const main = document.createElement("div");
   main.className = "member-main";
   main.innerHTML = `<i class="member-dot"></i><strong class="member-name"></strong><span class="member-tags"></span>`;
@@ -273,7 +292,7 @@ function memberItem(member, self, host) {
     const label = !deadline ? "LINK LOST · WAIT TURN" : seconds ? `LINK LOST · ${seconds}S` : "LINK LOST · FINALIZING";
     tags.insertAdjacentHTML("beforeend", `<span class="link-lost-tag" data-reconnect-until="${deadline}">${label}</span>`);
   }
-  if (member.role === "player") tags.insertAdjacentHTML("beforeend", `<span>${member.ready ? "READY" : "WAIT"}</span>`);
+  if (member.role === "player" && !member.isHost) tags.insertAdjacentHTML("beforeend", `<span>${member.ready ? "READY" : "WAIT"}</span>`);
   li.appendChild(main);
   if (host && member.id !== self.id) {
     const actions = document.createElement("div");
@@ -311,13 +330,24 @@ function renderRoom() {
   $("#watchList").replaceChildren(...watchers.map(member => memberItem(member, self, host)));
   $("#inviteUrl").textContent = inviteLink();
   $("#selfRole").textContent = self.role === "player" ? "PLAYER" : "WATCH";
-  $("#selfState").textContent = self.role === "player" ? (self.ready ? "READY" : "NOT READY") : "SPECTATING";
-  $("#readyBtn").hidden = self.role !== "player";
+  $("#selfState").textContent = self.role === "player" ? (host ? "HOST CONTROL" : (self.ready ? "READY" : "NOT READY")) : "SPECTATING";
+  const usedColors = new Set(players.filter(member => member.id !== self.id).map(member => member.color));
+  $("#colorPicker").hidden = self.role !== "player";
+  document.querySelectorAll(".color-choice").forEach(button => {
+    button.classList.toggle("selected", button.dataset.color === self.color);
+    button.disabled = room.phase !== "lobby" || usedColors.has(button.dataset.color);
+  });
+  $("#roomTimerEdit").hidden = !host;
+  const roomTimerInput = $("#roomTimerInput");
+  if (document.activeElement !== roomTimerInput) roomTimerInput.value = String(room.turnSeconds || 0);
+  roomTimerInput.disabled = room.phase !== "lobby";
+  $("#setRoomTimer").disabled = room.phase !== "lobby";
+  $("#readyBtn").hidden = self.role !== "player" || host;
   $("#readyBtn").textContent = self.ready ? "CANCEL READY" : "READY";
   $("#moveSelf").textContent = self.role === "player" ? "MOVE TO WATCH" : "JOIN PLAYERS";
   $("#moveSelf").disabled = room.phase !== "lobby" || (self.role === "spectator" && players.length >= 4);
   $("#startBtn").hidden = !host;
-  $("#startBtn").disabled = room.phase !== "lobby" || players.length < 2 || !players.every(player => player.ready);
+  $("#startBtn").disabled = room.phase !== "lobby" || players.length < 2 || !players.filter(player => !player.isHost).every(player => player.ready);
   drawQr().catch(() => { $("#roomError").textContent = "QR GENERATION FAILED"; });
 }
 
@@ -349,11 +379,9 @@ async function resumeInvite() {
   if (!state.nickname || !state.accessToken) return;
   setScreen("lobby");
   if (!code) return;
-  const saved = JSON.parse(store.getItem(`mfm:room:${code}`) || "null");
+  const saved = JSON.parse(store.getItem(`mfm:room:${code}`) || "null") || readRecovery(code);
   if (saved?.token) {
-    state.code = code;
-    state.token = saved.token;
-    state.memberId = saved.memberId;
+    saveSession({ ...saved, code });
     connectRoom();
   }
 }
@@ -367,7 +395,11 @@ $("#identityForm").addEventListener("submit", async event => {
   if (submit) submit.disabled = true;
   $("#identityError").textContent = "VERIFYING TEST ACCESS...";
   try {
-    const access = await request("/api/access", { method: "POST", auth: false, body: JSON.stringify({ nickname, testCode }) });
+    const code = new URLSearchParams(location.search).get("room")?.toUpperCase();
+    const recovery = code ? readRecovery(code, nickname) : null;
+    const access = !testCode && recovery
+      ? await request("/api/access/resume", { method: "POST", auth: false, body: JSON.stringify({ nickname, code, roomToken:recovery.token }) })
+      : await request("/api/access", { method: "POST", auth: false, body: JSON.stringify({ nickname, testCode }) });
     state.nickname = nickname;
     state.accessToken = access.token;
     store.setItem("mfm:nickname", nickname);
@@ -375,9 +407,12 @@ $("#identityForm").addEventListener("submit", async event => {
     $("#testCode").value = "";
     $("#nicknameView").textContent = nickname;
     $("#identityError").textContent = "";
+    if (access.room) saveSession({ ...access.room, token:recovery?.token });
     setScreen("lobby");
     resumeInvite();
   } catch (error) {
+    const code = new URLSearchParams(location.search).get("room")?.toUpperCase();
+    if (error.message === "ROOM RESUME EXPIRED") clearRecovery(code);
     $("#identityError").textContent = error.message;
   } finally {
     if (submit) submit.disabled = false;
@@ -436,6 +471,26 @@ $("#copyInvite").addEventListener("click", async () => {
   catch { $("#roomError").textContent = "COPY FAILED"; }
 });
 $("#readyBtn").addEventListener("click", () => send({ type: "ready" }));
+for (const color of PLAYER_COLORS) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "color-choice";
+  button.dataset.color = color;
+  button.style.setProperty("--choice", color);
+  button.title = color.toUpperCase();
+  button.setAttribute("aria-label", `Choose player color ${color}`);
+  button.addEventListener("click", () => send({ type: "color", color }));
+  $("#colorChoices").appendChild(button);
+}
+$("#setRoomTimer").addEventListener("click", () => {
+  const turnSeconds = Math.trunc(Number($("#roomTimerInput").value));
+  if (!Number.isInteger(turnSeconds) || turnSeconds !== 0 && (turnSeconds < 10 || turnSeconds > 600)) {
+    $("#roomError").textContent = "TURN TIMER MUST BE 0 OR 10-600 SEC";
+    return;
+  }
+  $("#roomError").textContent = "";
+  send({ type: "turnTimer", turnSeconds });
+});
 $("#startBtn").addEventListener("click", () => send({ type: "start", twoCount: 8 }));
 $("#moveSelf").addEventListener("click", () => {
   const self = state.room?.members.find(member => member.id === state.memberId);

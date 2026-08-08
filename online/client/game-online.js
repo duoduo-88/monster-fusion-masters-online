@@ -18,10 +18,15 @@ let linkOnline = false;
 let introTimer = null;
 let shownIntroKey = "";
 let serverClockOffset = 0;
+let lastTimerRatio = 0;
+const mobileNavigationQuery = matchMedia("(max-width:720px)");
+let mobileNavigationGuardInstalled = false;
+let mobileNavigationGuardArmed = false;
 const GAME_INTRO_MS = 8000;
-const PLAYER_COLORS = ["#6cbebc", "#d3655d", "#c8a951", "#8c78c4"];
+const PLAYER_COLORS = ["#6cbebc", "#d3655d", "#c8a951", "#8c78c4", "#72aa83", "#d8894b", "#cf6f9d", "#4f87c5", "#a8bd55"];
+const gameColor = index => roomState?.game?.players?.[index]?.color || PLAYER_COLORS[index % PLAYER_COLORS.length] || "#c8a951";
 
-if (!roomCode || !memberId || !saved?.token || !accessToken || !window.MFMBridge) location.replace("./");
+if (!roomCode || !memberId || !saved?.token || !accessToken || !window.MFMBridge) location.replace(`./${roomCode ? `?room=${encodeURIComponent(roomCode)}` : ""}`);
 else start();
 
 function webSocketUrl() {
@@ -110,12 +115,12 @@ function addOnlineUi() {
       <div class="result-scores" id="onlineResultScores"></div>
       <div class="result-actions">
         <button type="button" class="pix-btn" id="resultClose">VIEW BOARD</button>
-        <button type="button" class="pix-btn danger" id="resultLeave">LEAVE ROOM</button>
+        <button type="button" class="pix-btn danger" id="resultLeave">VIEW BOARD</button>
       </div>
     </article>`;
   document.body.appendChild(result);
   result.querySelector("#resultClose").addEventListener("click", handleResultPrimary);
-  result.querySelector("#resultLeave").addEventListener("click", leaveRoom);
+  result.querySelector("#resultLeave").addEventListener("click", hideResult);
   const roomTag = document.createElement("span");
   roomTag.className = "online-room-tag";
   roomTag.textContent = `ROOM ${roomCode} · ${role === "spectator" ? "WATCH" : "PLAYER"}`;
@@ -158,6 +163,7 @@ function connect() {
       handleGameIntro(roomState.game);
       updateRoundAdvance(roomState.game);
       decorateTimerBars();
+      updateTimer();
       handleGameResult(roomState.game);
     }
   });
@@ -165,7 +171,7 @@ function connect() {
     if (socket !== nextSocket) return;
     setStatus(false, "RECONNECTING");
     if (intentionalClose) return;
-    if (event.code === 4001) { sessionStorage.removeItem(`mfm:room:${roomCode}`); returnToLobby(); return; }
+    if (event.code === 4001) { sessionStorage.removeItem(`mfm:room:${roomCode}`); try { localStorage.removeItem(`mfm:resume:${roomCode}`); } catch {} returnToLobby(); return; }
     reconnectTimer = setTimeout(connect, 1200);
   });
 }
@@ -235,7 +241,7 @@ function handleGameIntro(game) {
     }
 
     const player = players[playerIndex] || players[actualIndex];
-    const color = PLAYER_COLORS[playerIndex] || "#c8a951";
+    const color = gameColor(playerIndex);
     intro.dataset.stage = stage;
     intro.style.setProperty("--intro-color", color);
     document.querySelector("#introLabel").textContent = label;
@@ -277,9 +283,12 @@ function updateRoundAdvance(game) {
   if (!button) return;
   const available = game?.phase === "round-over" && game.result?.final === false;
   const isHost = roomState?.hostId === memberId;
-  button.hidden = !available;
+  const waitingPlayer = available && !isHost && role === "player";
+  const mobile = matchMedia("(max-width:720px)").matches;
+  button.hidden = !available || role === "spectator" || (waitingPlayer && mobile);
   button.disabled = available && !isHost;
-  button.textContent = isHost ? "NEXT ROUND" : "WAIT HOST";
+  button.textContent = isHost ? "NEXT ROUND" : "WAITING NEXT ROUND";
+  document.querySelector("#mobileTurnTimer")?.classList.toggle("waiting-next-round", waitingPlayer);
 }
 
 function openResult(mode, details) {
@@ -295,7 +304,7 @@ function openResult(mode, details) {
   document.querySelector("#onlineResultScores").innerHTML = details.scores || "";
   result.dataset.primaryAction = details.primaryAction || "close";
   result.querySelector("#resultClose").textContent = details.primaryLabel || (mode === "surrender" ? "CONTINUE" : "VIEW BOARD");
-  result.querySelector("#resultLeave").hidden = mode === "surrender";
+  result.querySelector("#resultLeave").hidden = mode === "surrender" || details.primaryAction === "close";
   result.hidden = false;
   document.body.classList.remove("result-impact");
   void document.body.offsetWidth;
@@ -339,7 +348,7 @@ function handleGameResult(game) {
         title: final ? "DEFEAT" : "YOU FORFEIT",
         winner: final ? `${game.result.winnerNickname} WINS` : `ROUND ${game.result.round} SURRENDERED`,
         reason: final ? "MATCH COMPLETE" : (isHost ? "START THE NEXT ROUND" : "NEXT ROUND REMAINS AVAILABLE"),
-        color: PLAYER_COLORS[game.players.findIndex(player => player.memberId === event.memberId)] || "#c94b4b",
+        color: gameColor(game.players.findIndex(player => player.memberId === event.memberId)),
         scores,
         primaryLabel: !final && isHost ? "NEXT ROUND" : "VIEW BOARD",
         primaryAction: !final && isHost ? "next-round" : "close"
@@ -351,7 +360,7 @@ function handleGameResult(game) {
       title: final ? (selfWon ? "YOU WIN" : "VICTORY") : (selfWon ? "ROUND WIN" : "ROUND OVER"),
       winner: final ? `${game.result.winnerNickname} WINS` : `${game.result.winnerNickname} TAKES ROUND`,
       reason: final ? game.result.reason : (isHost ? "START THE NEXT ROUND" : "WAITING FOR HOST"),
-      color: PLAYER_COLORS[winnerIndex] || "#c8a951",
+      color: gameColor(winnerIndex),
       scores,
       primaryLabel: !final && isHost ? "NEXT ROUND" : "VIEW BOARD",
       primaryAction: !final && isHost ? "next-round" : "close"
@@ -368,7 +377,7 @@ function handleGameResult(game) {
       title: event.roundOnly ? "YOU FORFEIT" : "SURRENDER",
       winner: event.roundOnly ? "ROUND SURRENDERED" : `${event.nickname || "PLAYER"} SURRENDERED`,
       reason: event.roundOnly ? "NEXT ROUND REMAINS AVAILABLE" : "THE MATCH CONTINUES",
-      color: PLAYER_COLORS[playerIndex] || "#c94b4b",
+      color: gameColor(playerIndex),
       scores: ""
     });
   }
@@ -392,6 +401,7 @@ function leaveRoom() {
   send({ type: "leave" });
   socket?.close(1000, "LEFT ROOM");
   sessionStorage.removeItem(`mfm:room:${roomCode}`);
+  try { localStorage.removeItem(`mfm:resume:${roomCode}`); } catch {}
   location.replace("./");
 }
 
@@ -400,21 +410,26 @@ function updateTimer() {
   const output = document.querySelector("#turnTimer");
   if (!output) return;
   const deadline = roomState?.game?.turnDeadline;
+  const activeAt = Number(roomState?.game?.turnActiveAt || 0);
   const current = roomState?.game?.players?.[roomState.game.current];
+  const waitingNext = role === "player" && roomState?.game?.phase === "round-over" && roomState?.game?.result?.final === false && roomState?.hostId !== memberId;
   const mobileName = document.querySelector("#mobileTurnName");
   if (mobileName) {
     const isSelf = role === "player" && current?.memberId === memberId;
-    mobileName.textContent = !linkOnline ? "RECONNECTING" : isSelf ? "YOUR TURN" : (current?.nickname || "WAIT");
-    mobileName.style.color = !linkOnline ? "#c8a951" : isSelf ? (current?.color || "#f1eedc") : "#8d8a7b";
+    mobileName.textContent = !linkOnline ? "RECONNECTING" : waitingNext ? "WAITING NEXT ROUND" : isSelf ? "YOUR TURN" : (current?.nickname || "WAIT");
+    mobileName.style.color = !linkOnline || waitingNext ? "#c8a951" : isSelf ? (current?.color || "#f1eedc") : "#8d8a7b";
   }
+  if (waitingNext) { output.textContent = "WAIT"; output.dataset.urgent = "false"; output.dataset.final = "false"; updateProgress(0, "WAIT"); return; }
   if (!linkOnline || !deadline || current?.resigned) { output.textContent = "--"; output.dataset.urgent = "false"; output.dataset.final = "false"; updateProgress(0, "--"); return; }
-  const left = Math.max(0, Math.ceil((deadline - syncedNow()) / 1000));
+  const now = syncedNow();
+  const total = roomState?.game?.turnSeconds || 0;
+  const waitingForDeal = activeAt > now;
+  const left = waitingForDeal ? total : Math.max(0, Math.ceil((deadline - now) / 1000));
   output.textContent = String(left).padStart(2, "0");
   output.dataset.urgent = left <= 10 ? "true" : "false";
   output.dataset.final = left <= 3 ? "true" : "false";
-  const total = roomState?.game?.turnSeconds || 0;
-  updateProgress(total ? Math.max(0, Math.min(1, (deadline - syncedNow()) / (total * 1000))) : 0, `${left}S`);
-  if (role === "player" && current?.memberId === memberId && left <= 10 && left > 0 && warnedTurn !== roomState.game.turn) {
+  updateProgress(total ? (waitingForDeal ? 1 : Math.max(0, Math.min(1, (deadline - now) / (total * 1000)))) : 0, `${left}S`);
+  if (!waitingForDeal && role === "player" && current?.memberId === memberId && left <= 10 && left > 0 && warnedTurn !== roomState.game.turn) {
     warnedTurn = roomState.game.turn;
     const warning = document.querySelector("#turnWarning");
     warning.classList.remove("show");
@@ -444,19 +459,24 @@ function timerBar(className) {
   const wrap = document.createElement("span");
   wrap.className = `turn-progress ${className}`;
   wrap.innerHTML = '<span class="turn-progress-track"><i></i></span><b class="turn-progress-value">--</b>';
+  wrap.querySelector("i").style.width = `${lastTimerRatio * 100}%`;
   return wrap;
 }
 
 function decorateTimerBars() {
-  if (!roomState?.game?.turnSeconds) return;
   const cards = document.querySelectorAll("#players .player");
-  cards.forEach(card => card.querySelector(".turn-progress")?.remove());
-  const active = cards[roomState.game.current];
+  if (!roomState?.game?.turnSeconds) {
+    cards.forEach(card => card.querySelector(".turn-progress")?.remove());
+    return;
+  }
   const current = roomState.game.players?.[roomState.game.current];
-  if (active && !current?.resigned) active.appendChild(timerBar("roster-timer"));
+  cards.forEach(card => { if (card.dataset.member !== current?.memberId) card.querySelector(".turn-progress")?.remove(); });
+  const active = [...cards].find(card => card.dataset.member === current?.memberId);
+  if (active && !current?.resigned && !active.querySelector(".turn-progress")) active.appendChild(timerBar("roster-timer"));
 }
 
 function updateProgress(ratio, label = "--") {
+  lastTimerRatio = ratio;
   document.querySelectorAll(".turn-progress i").forEach(bar => { bar.style.width = `${ratio * 100}%`; });
   document.querySelectorAll(".turn-progress-value").forEach(value => { value.textContent = label; });
   document.querySelectorAll(".turn-progress").forEach(bar => bar.classList.toggle("urgent", ratio > 0 && ratio <= 10 / (roomState?.game?.turnSeconds || 1)));
@@ -472,5 +492,39 @@ function start() {
     send(message);
   });
   addEventListener("mfm:leave", leaveRoom);
+  installMobileNavigationGuard();
   setInterval(updateTimer, 200);
+}
+
+function installMobileNavigationGuard() {
+  if (!mobileNavigationGuardInstalled) {
+    mobileNavigationGuardInstalled = true;
+    addEventListener("popstate", () => {
+      if (intentionalClose || !mobileNavigationQuery.matches) {
+        mobileNavigationGuardArmed = false;
+        return;
+      }
+      history.pushState({ ...(history.state || {}), mfmGameGuard: true }, "");
+      mobileNavigationGuardArmed = true;
+      window.MFMBridge?.error?.("USE LEAVE TO EXIT");
+    });
+    const sync = () => syncMobileNavigationGuard();
+    if (mobileNavigationQuery.addEventListener) mobileNavigationQuery.addEventListener("change", sync);
+    else mobileNavigationQuery.addListener(sync);
+  }
+  syncMobileNavigationGuard();
+}
+
+function syncMobileNavigationGuard() {
+  if (intentionalClose || !mobileNavigationQuery.matches) {
+    mobileNavigationGuardArmed = false;
+    return;
+  }
+  if (mobileNavigationGuardArmed || history.state?.mfmGameGuard) {
+    mobileNavigationGuardArmed = true;
+    return;
+  }
+  history.replaceState({ ...(history.state || {}), mfmGameBase: true }, "");
+  history.pushState({ mfmGameGuard: true }, "");
+  mobileNavigationGuardArmed = true;
 }
